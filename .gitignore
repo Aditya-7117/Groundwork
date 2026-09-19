@@ -42,12 +42,6 @@ tmp/
 # macOS
 .DS_Store
 
-# Private working notes
-docs/SESSION-*.md
-docs/DECISIONS-PENDING.md
-docs/DEFENCE.md
-docs/INTERVIEW-QA.md
-
 # Downloaded corpora and run outputs
 data/
 results/
