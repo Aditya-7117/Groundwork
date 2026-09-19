@@ -1,0 +1,88 @@
+[project]
+name = "groundwork"
+version = "0.1.0"
+description = "An evaluation harness that measures which retrieval-augmented generation configuration actually works."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Aditya Magar" }]
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168",
+    "mypy>=2.3",
+    "pytest>=9.1",
+    "ruff>=0.16",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/groundwork"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "A",     # builtin shadowing
+    "ANN",   # annotations
+    "B",     # bugbear
+    "BLE",   # blind except
+    "C4",    # comprehensions
+    "D",     # docstrings
+    "DTZ",   # naive datetimes
+    "E",     # pycodestyle errors
+    "ERA",   # commented-out code
+    "F",     # pyflakes
+    "FBT",   # boolean positional arguments
+    "G",     # logging format
+    "I",     # import order
+    "LOG",   # logging misuse
+    "N",     # naming
+    "PL",    # pylint
+    "PT",    # pytest style
+    "PTH",   # pathlib over os.path
+    "RET",   # return consistency
+    "RUF",   # ruff-specific
+    "S",     # bandit security checks
+    "SIM",   # simplifications
+    "T20",   # print statements
+    "TRY",   # exception handling
+    "UP",    # pyupgrade
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    "D105",   # magic methods are self-describing
+    "D107",   # __init__ is documented on the class
+    "TRY003", # long messages at the raise site are clearer than one exception class per message
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "D",       # test names are the documentation
+    "PLR2004", # hand-worked expected values are the point of the tests
+    "S101",    # pytest uses assert
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]

@@ -1,0 +1,52 @@
+# Agent and editor config. Never published, never committed.
+CLAUDE.md
+BRIEF.md
+AGENTS.md
+GEMINI.md
+.claude/
+.cursor/
+.cursorrules
+.windsurf/
+.clinerules
+.aider*
+.vscode/
+.idea/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local scratch
+scratch/
+tmp/
+*.log
+
+# macOS
+.DS_Store
+
+# Private working notes
+docs/SESSION-*.md
+docs/DECISIONS-PENDING.md
+docs/DEFENCE.md
+docs/INTERVIEW-QA.md
+
+# Downloaded corpora and run outputs
+data/
+results/
