@@ -15,8 +15,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from groundwork.bm25 import BM25Index
-from groundwork.chunking import chunk_documents
-from groundwork.config import ExperimentConfig
+from groundwork.chunking import Chunk, chunk_documents
+from groundwork.config import ExperimentConfig, RetrievalConfig
 from groundwork.corpus import Corpus
 from groundwork.metrics import mean_over_queries, ndcg_at_k, recall_at_k, reciprocal_rank_at_k
 from groundwork.ranking import RankedDocument, rank_documents_by_best_chunk
@@ -84,7 +84,7 @@ def run_experiment(
     stage_seconds["chunking"] = clock() - started
 
     started = clock()
-    index = BM25Index(chunks, k1=config.retrieval.k1, b=config.retrieval.b)
+    index = _build_index(chunks, config.retrieval)
     stage_seconds["indexing"] = clock() - started
 
     rankings: dict[str, tuple[RankedDocument, ...]] = {}
@@ -129,6 +129,14 @@ def run_experiment(
         stage_seconds=stage_seconds,
         retrieval_latency_ms=_summarise(latencies_ms),
     )
+
+
+def _build_index(chunks: Sequence[Chunk], retrieval: RetrievalConfig) -> BM25Index:
+    # An exhaustive match: adding a retrieval method to the config without handling it here is a
+    # type error, rather than a config that silently runs BM25.
+    match retrieval.method:
+        case "bm25":
+            return BM25Index(chunks, k1=retrieval.k1, b=retrieval.b)
 
 
 def _select_queries(config: ExperimentConfig, corpus: Corpus) -> tuple[list[str], tuple[str, ...]]:
