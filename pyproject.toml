@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 authors = [{ name = "Aditya Magar" }]
 dependencies = []
 
+[project.scripts]
+groundwork = "groundwork.cli:main"
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.168",
