@@ -133,10 +133,13 @@ class BuiltPage:
         page: The rebuilt page.
         token_spans: Per source token, the characters it produced, or None when the token was
             dropped (a tag, or content inside a dropped section).
+        content_tokens: How many source tokens were words rather than tags. Comparing this with
+            the number of mapped spans says how much of the page's content was kept.
     """
 
     page: Page
     token_spans: tuple[tuple[int, int] | None, ...]
+    content_tokens: int
 
     def char_span(self, start_token: int, end_token: int) -> tuple[int, int] | None:
         """Return the character range covered by tokens [start_token, end_token).
@@ -207,7 +210,13 @@ def build_page(
         else:
             builder.word(index, token, glued=glued)
     builder.finish()
-    return builder.result(page_id=page_id, title=title, url=url, token_count=len(stream))
+    return builder.result(
+        page_id=page_id,
+        title=title,
+        url=url,
+        token_count=len(stream),
+        content_tokens=sum(1 for flag in stream.is_html if not flag),
+    )
 
 
 class _PageBuilder:
@@ -357,7 +366,9 @@ class _PageBuilder:
         }
         self._blocks.append((block, shifted))
 
-    def result(self, *, page_id: str, title: str, url: str, token_count: int) -> BuiltPage:
+    def result(
+        self, *, page_id: str, title: str, url: str, token_count: int, content_tokens: int
+    ) -> BuiltPage:
         """Assemble the page and its token mapping.
 
         The mapping covers every source token, so a span inside a dropped section resolves to
@@ -377,4 +388,5 @@ class _PageBuilder:
                 blocks=blocks,
             ),
             token_spans=token_spans,
+            content_tokens=content_tokens,
         )

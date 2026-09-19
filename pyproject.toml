@@ -76,6 +76,7 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
     "D",       # test names are the documentation
+    "PLR0913", # fixture builders take one argument per field of the record they build
     "PLR2004", # hand-worked expected values are the point of the tests
     "S101",    # pytest uses assert
 ]
@@ -85,6 +86,12 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# pyarrow ships no type information, so its imports cannot be checked. Everything read through it
+# is converted to typed records in natural_questions.py before it reaches the rest of the code.
+module = ["pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -211,3 +211,9 @@ class TestTagsWithAttributes:
         span = built.char_span(3, 4)
         assert span is not None
         assert built.page.text[span[0] : span[1]] == "Alpha"
+
+
+def test_content_tokens_counts_words_not_tags() -> None:
+    built = page(SIMPLE)
+    assert built.content_tokens == 10  # 5 words + 1 heading + 4 words, excluding every tag
+    assert sum(1 for span in built.token_spans if span is not None) == built.content_tokens

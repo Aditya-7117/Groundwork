@@ -1,6 +1,8 @@
 # 0004. Provisional corpus for pipeline plumbing
 
-Date: 2026-09-19. Status: accepted as provisional. The project's real corpus has not been chosen.
+Date: 2026-09-19. Status: superseded by decision 0009, which chose Natural Questions as the
+corpus. SciFact remains registered as a small, fast corpus for checking the pipeline against a
+published BM25 baseline.
 
 ## Context
 
