@@ -85,4 +85,5 @@ warn_unreachable = true
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
+empty_parameter_set_mark = "fail_at_collect"
 filterwarnings = ["error"]
