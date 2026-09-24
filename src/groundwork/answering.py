@@ -40,6 +40,7 @@ class Answer:
     Attributes:
         setup: The grid setup whose ranking supplied the passages.
         question_id: The question.
+        question: Its text.
         answer_type: Where its reference answer sits: paragraph, table or list.
         chunk_ids: The chunks the writer read, best first.
         passages: Their texts, exactly as the writer read them, so judging and labelling need no
@@ -53,6 +54,7 @@ class Answer:
 
     setup: str
     question_id: str
+    question: str
     answer_type: str
     chunk_ids: tuple[str, ...]
     passages: tuple[str, ...]
@@ -161,6 +163,7 @@ def answer_setup(
             Answer(
                 setup=config.name,
                 question_id=question.question_id,
+                question=question.text,
                 answer_type=question.answer_type,
                 chunk_ids=chunk_ids,
                 passages=passages_read,
@@ -219,6 +222,7 @@ def load_answers(path: Path) -> tuple[Answer, ...]:
                 Answer(
                     setup=str(row["setup"]),
                     question_id=str(row["question_id"]),
+                    question=str(row["question"]),
                     answer_type=str(row["answer_type"]),
                     chunk_ids=tuple(str(item) for item in _sequence(row["chunk_ids"])),
                     passages=tuple(str(item) for item in _sequence(row["passages"])),
