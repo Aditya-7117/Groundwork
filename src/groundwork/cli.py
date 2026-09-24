@@ -1,6 +1,7 @@
 """Command-line entry point.
 
     groundwork build-corpus         download the dataset and build the evaluation corpus
+    groundwork grid                 write the config file of every setup in the grid
     groundwork run CONFIG [...]     run experiments and write one results artefact each
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
@@ -26,6 +27,7 @@ from groundwork.corpus import CorpusError, load_beir
 from groundwork.embeddings import EmbeddingError
 from groundwork.evaluation import EvaluationSet, EvaluationSetError, from_beir, load_built_corpus
 from groundwork.experiment import LocalModels, ModelProvider, run_experiment
+from groundwork.grid import write_grid
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
 from groundwork.rerank import RerankError
@@ -70,6 +72,9 @@ def main(
     try:
         if arguments.command == "build-corpus":
             return _build(data_dir)
+        if arguments.command == "grid":
+            write_grid(arguments.out)
+            return 0
         return _run(
             arguments.configs,
             data_dir,
@@ -195,6 +200,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("build-corpus", help="download the dataset and build the corpus")
+    grid = commands.add_parser("grid", help="write the config file of every setup in the grid")
+    grid.add_argument(
+        "--out", type=Path, default=Path("configs/grid"), help="output (default: configs/grid)"
+    )
     run = commands.add_parser("run", help="run experiments and write one results artefact each")
     run.add_argument(
         "configs", type=Path, nargs="+", help="experiment config files, e.g. configs/grid/*.toml"
