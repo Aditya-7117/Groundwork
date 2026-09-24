@@ -4,6 +4,7 @@
     groundwork grid                 write the config file of every setup in the grid
     groundwork run CONFIG [...]     run experiments and write one results artefact each
     groundwork answer CONFIG        write answers from chosen setups' latest retrieval runs
+    groundwork judge ANSWERS_DIR    score answers by the judge, NLI, word overlap and containment
     groundwork label ANSWERS_DIR    label a blind sample of answers by hand
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
@@ -15,6 +16,7 @@ import argparse
 import json
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,24 +31,35 @@ from groundwork.artefact import (
     ArtefactError,
     RunRecord,
     StageTwoRecord,
+    VerdictsRecord,
     current_code_version,
     describe_environment,
     write_artefact,
     write_stage_two_artefact,
+    write_verdicts_artefact,
 )
+from groundwork.baselines import NliChecker
 from groundwork.cache import ResponseCache
-from groundwork.config import ConfigError, ExperimentConfig, load_config, load_stage_two_config
+from groundwork.config import (
+    ConfigError,
+    ExperimentConfig,
+    StageTwoConfig,
+    load_config,
+    load_stage_two_config,
+)
 from groundwork.download import SourceError
 from groundwork.embeddings import EmbeddingError
 from groundwork.evaluation import EvaluationSet, EvaluationSetError, load_built_corpus
 from groundwork.experiment import LocalModels, ModelProvider, run_experiment
 from groundwork.generation import GenerationError, OllamaWriter
 from groundwork.grid import write_grid
+from groundwork.judging import GeminiJudge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
+from groundwork.verdicts import CostGuard, entailment_with, judge_all, score_answers
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +75,7 @@ _FAILURES = (
     AnsweringError,
     GenerationError,
     LabellingError,
+    JudgeError,
 )
 
 
@@ -85,29 +99,48 @@ def main(
     arguments = _parser().parse_args(argv)
     configure_logging(arguments.log_level)
     data_dir: Path = arguments.data_dir
-    try:
-        if arguments.command == "build-corpus":
-            return _build(data_dir)
-        if arguments.command == "grid":
-            write_grid(arguments.out)
-            return 0
-        if arguments.command == "label":
-            return _label(arguments.answers, arguments.results_dir)
-        if arguments.command == "answer":
-            return _answer(arguments.config, data_dir, arguments.results_dir, now=now or _utc_now)
-        return _run(
+    clock = now or _utc_now
+    commands: dict[str, Callable[[], int]] = {
+        "build-corpus": lambda: _build(data_dir),
+        "grid": lambda: _grid(arguments.out),
+        "run": lambda: _run(
             arguments.configs,
             data_dir,
             arguments.results_dir,
-            now=now or _utc_now,
+            now=clock,
             models=models
             or LocalModels(
                 cache_dir=data_dir / "embeddings", weights_dir=data_dir / "huggingface" / "hub"
             ),
-        )
+        ),
+        "answer": lambda: _answer(arguments.config, data_dir, arguments.results_dir, now=clock),
+        "judge": lambda: _judge(
+            arguments.answers,
+            data_dir,
+            arguments.results_dir,
+            budget=_Budget(dollars=arguments.budget, workers=arguments.workers),
+            now=clock,
+        ),
+        "label": lambda: _label(arguments.answers, arguments.results_dir),
+    }
+    try:
+        return commands[arguments.command]()
     except _FAILURES as error:
         logger.error("command failed", extra={"error": str(error)})  # noqa: TRY400 -- the message is the diagnosis
         return 1
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Budget:
+    """What judging may cost, and how many judge requests may be in flight at once."""
+
+    dollars: float
+    workers: int
+
+
+def _grid(out: Path) -> int:
+    write_grid(out)
+    return 0
 
 
 def _build(data_dir: Path) -> int:
@@ -250,6 +283,51 @@ def _label(answers_dir: Path, results_dir: Path) -> int:
     return 0
 
 
+def _judge(
+    answers_dir: Path, data_dir: Path, results_dir: Path, *, budget: _Budget, now: Now
+) -> int:
+    """Score a stage-two run's answers by every rung, and write the verdicts as their own run.
+
+    The answers directory is never modified; the verdicts point back to it.
+    """
+    document = json.loads((answers_dir / "result.json").read_text(encoding="utf-8"))
+    config = StageTwoConfig.model_validate(document["experiment"]["config"])
+    answers = load_answers(answers_dir / "answers.jsonl")
+    evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
+    references = {q.question_id: q.short_answers for q in evaluation_set.questions}
+    started_at = now()
+    judge = GeminiJudge(
+        cache=ResponseCache(data_dir / "cache" / "judge.jsonl"),
+        model=config.judge.model,
+        thinking=config.judge.thinking,
+    )
+    answered = sum(not answer.declined for answer in answers)
+    guard = CostGuard(budget=budget.dollars, expected_calls=2 * answered)
+    judged = judge_all(answers, references, judge, guard, workers=budget.workers)
+    checker = NliChecker(cache_dir=data_dir / "huggingface" / "hub")
+    scored = score_answers(answers, references, judged, entailment_with(checker))
+    directory = write_verdicts_artefact(
+        VerdictsRecord(
+            config=config,
+            answers_dir=answers_dir,
+            scored=scored,
+            budget=budget.dollars,
+            spent=guard.spent,
+            nli_device=checker.device,
+            started_at=started_at,
+            finished_at=now(),
+            code=current_code_version(),
+            environment=describe_environment(),
+        ),
+        results_dir,
+    )
+    logger.info(
+        "judging complete",
+        extra={"artefact": str(directory), "spent_usd": round(guard.spent, 2)},
+    )
+    return 0
+
+
 def _load(config: ExperimentConfig, data_dir: Path) -> EvaluationSet:
     """Load the evaluation set the config names.
 
@@ -311,6 +389,17 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("results"),
         help="runs and output (default: results)",
+    )
+    judge = commands.add_parser("judge", help="score answers by every rung of the ladder")
+    judge.add_argument("answers", type=Path, help="a stage-two run directory")
+    judge.add_argument(
+        "--budget", type=float, required=True, help="approved judging budget in US dollars"
+    )
+    judge.add_argument(
+        "--workers", type=int, default=8, help="judge requests in flight at once (default: 8)"
+    )
+    judge.add_argument(
+        "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
     )
     label = commands.add_parser("label", help="label a blind sample of answers by hand")
     label.add_argument("answers", type=Path, help="a stage-two run directory")

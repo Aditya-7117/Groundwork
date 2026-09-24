@@ -177,10 +177,11 @@ class GeminiJudge:
         *,
         cache: ResponseCache,
         thinking: ThinkingLevel,
+        model: str = JUDGE_MODEL,
         api_key: str | None = None,
         client: JsonClient | None = None,
     ) -> None:
-        """Set the thinking level and find the API key.
+        """Set the model and thinking level, and find the API key.
 
         Raises:
             JudgeError: If no key is given and GEMINI_API_KEY is not set.
@@ -189,6 +190,7 @@ class GeminiJudge:
         if not key:
             raise JudgeError(f"set {API_KEY_VARIABLE} (see .env.example) to call the judge")
         self._key = key
+        self.model = model
         self._cache = cache
         self.thinking: ThinkingLevel = thinking
         self._client = client or JsonClient()
@@ -216,14 +218,14 @@ class GeminiJudge:
                 "thinkingConfig": {"thinkingLevel": self.thinking},
             },
         }
-        key = request_key({"model": JUDGE_MODEL, **payload})
+        key = request_key({"model": self.model, **payload})
         stored = self._cache.get(key)
         cached = stored is not None
         if stored is None:
             started = time.perf_counter()
             try:
                 raw = self._client.request(
-                    _ENDPOINT.format(model=JUDGE_MODEL),
+                    _ENDPOINT.format(model=self.model),
                     payload,
                     headers={"x-goog-api-key": self._key},
                 )

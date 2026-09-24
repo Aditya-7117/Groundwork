@@ -10,7 +10,9 @@ never overwritten. It holds:
   numbers can be recomputed with an independent tool such as trec_eval.
 
 A stage-two run, which writes answers from chosen setups' rankings, gets a directory of the same
-shape under results/<stage-two name>/, holding result.json and answers.jsonl.
+shape under results/<stage-two name>/, holding result.json and answers.jsonl. Its verdicts go to
+results/<stage-two name>-verdicts/, holding result.json and scored.jsonl, and point back to the
+answers they scored.
 """
 
 import json
@@ -21,15 +23,25 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from groundwork import __version__
 from groundwork.answering import Answer, answer_rows, summarise
+from groundwork.baselines import NLI_MODEL
 from groundwork.config import ExperimentConfig, StageTwoConfig, config_digest
 from groundwork.experiment import ExperimentResult
 from groundwork.generation import CONTEXT_TOKENS, SYSTEM_PROMPT
+from groundwork.judging import CORRECTNESS, GROUNDEDNESS
+from groundwork.verdicts import (
+    GEMINI_PRICE,
+    LEXICAL_SUPPORTED,
+    NLI_SUPPORTED,
+    Scored,
+    baseline_agreement,
+    summarise_setup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +204,96 @@ def write_stage_two_artefact(record: StageTwoRecord, results_dir: Path) -> Path:
             "answers.jsonl": answer_rows(record.answers),
             "result.json": json.dumps(document, indent=2) + "\n",
         },
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VerdictsRecord:
+    """Everything that goes into one verdicts artefact.
+
+    Attributes:
+        config: The stage-two config the answers were written under.
+        answers_dir: The answers that were scored.
+        scored: Every answer's result from every rung.
+        budget: The approved judging budget, in the price's currency.
+        spent: What the judging cost at the list price.
+        nli_device: Where the NLI classifier ran.
+        started_at: UTC start.
+        finished_at: UTC finish.
+        code: The code version.
+        environment: The machine.
+    """
+
+    config: StageTwoConfig
+    answers_dir: Path
+    scored: tuple[Scored, ...]
+    budget: float
+    spent: float
+    nli_device: str
+    started_at: datetime
+    finished_at: datetime
+    code: CodeVersion
+    environment: Mapping[str, object]
+
+
+def write_verdicts_artefact(record: VerdictsRecord, results_dir: Path) -> Path:
+    """Write the verdicts for one stage-two run and return their directory.
+
+    Raises:
+        ValueError: If a timestamp is not timezone-aware UTC.
+        ArtefactError: If the run directory already exists.
+    """
+    for label, moment in (("started_at", record.started_at), ("finished_at", record.finished_at)):
+        if moment.utcoffset() != timedelta(0):
+            raise ValueError(f"{label} must be timezone-aware UTC, got {moment.isoformat()}")
+    config = record.config
+    digest = config_digest(config)
+    document = {
+        "schema_version": STAGE_TWO_SCHEMA_VERSION,
+        "answers": record.answers_dir.as_posix(),
+        "code": {
+            "groundwork_version": record.code.package_version,
+            "git_commit": record.code.git_commit,
+            "git_dirty": record.code.git_dirty,
+        },
+        "environment": dict(record.environment),
+        "judge": {
+            "model": config.judge.model,
+            "thinking": config.judge.thinking,
+            "rubrics": {
+                rubric.name: {"instruction": rubric.instruction, "labels": list(rubric.labels)}
+                for rubric in (GROUNDEDNESS, CORRECTNESS)
+            },
+            "price": asdict(GEMINI_PRICE),
+            "budget": record.budget,
+            "spent": record.spent,
+        },
+        "baselines": {
+            "nli": {
+                "model": NLI_MODEL.name,
+                "revision": NLI_MODEL.revision,
+                "device": record.nli_device,
+                "precision": "float32",
+                "supported_at": NLI_SUPPORTED,
+            },
+            "lexical": {"supported_at": LEXICAL_SUPPORTED},
+        },
+        "timing": {
+            "started_at": record.started_at.isoformat(),
+            "finished_at": record.finished_at.isoformat(),
+        },
+        "setups": {
+            setup: summarise_setup([s for s in record.scored if s.setup == setup])
+            for setup in config.setups
+        },
+        "agreement_with_judge": baseline_agreement(record.scored, seed=config.seed),
+        "files": {"scored": "scored.jsonl"},
+    }
+    rows = "".join(json.dumps(asdict(s), ensure_ascii=False) + "\n" for s in record.scored)
+    return _publish(
+        results_dir / f"{config.name}-verdicts",
+        f"{record.started_at:%Y%m%dT%H%M%SZ}-{digest[:12]}",
+        {"scored.jsonl": rows, "result.json": json.dumps(document, indent=2) + "\n"},
     )
 
 
