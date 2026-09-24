@@ -20,6 +20,7 @@ from groundwork.metrics import (
     Metric,
     mean_over_queries,
     ndcg_at_k,
+    precision_at_k,
     recall_at_k,
     reciprocal_rank_at_k,
 )
@@ -45,26 +46,34 @@ GRADED_JUDGEMENTS = {"d1": 3, "d2": 2, "d3": 3, "d4": 0, "d5": 1, "d6": 2, "d7":
 class TestInvalidInput:
     """A metric that quietly accepts malformed input produces a plausible wrong number."""
 
-    @pytest.mark.parametrize("metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k])
+    @pytest.mark.parametrize(
+        "metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k, precision_at_k]
+    )
     @pytest.mark.parametrize("k", [0, -1])
     def test_rejects_k_below_one(self, metric: Metric, k: int) -> None:
         with pytest.raises(ValueError, match="k must be at least 1"):
             metric(BINARY_RANKING, BINARY_JUDGEMENTS, k)
 
-    @pytest.mark.parametrize("metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k])
+    @pytest.mark.parametrize(
+        "metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k, precision_at_k]
+    )
     def test_rejects_duplicate_documents_in_ranking(self, metric: Metric) -> None:
         # A duplicate would let one relevant document count twice towards recall and DCG.
         with pytest.raises(ValueError, match="duplicate document ids: d2"):
             metric(["d1", "d2", "d2"], BINARY_JUDGEMENTS, 3)
 
-    @pytest.mark.parametrize("metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k])
+    @pytest.mark.parametrize(
+        "metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k, precision_at_k]
+    )
     def test_rejects_query_with_no_relevant_document(self, metric: Metric) -> None:
         # Recall divides by the number of relevant documents and nDCG by the ideal DCG. Both are
         # zero here, so the metric is undefined and the caller must exclude the query explicitly.
         with pytest.raises(ValueError, match="no relevant document"):
             metric(BINARY_RANKING, {"d1": 0, "d2": 0}, 5)
 
-    @pytest.mark.parametrize("metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k])
+    @pytest.mark.parametrize(
+        "metric", [recall_at_k, ndcg_at_k, reciprocal_rank_at_k, precision_at_k]
+    )
     def test_rejects_negative_grades(self, metric: Metric) -> None:
         with pytest.raises(ValueError, match="negative relevance grade"):
             metric(BINARY_RANKING, {"d2": 1, "d3": -1}, 5)
@@ -172,6 +181,37 @@ class TestReciprocalRankAtK:
         # Ranking [d4, d1] with d4 judged grade 0 and d1 grade 3. The first relevant document
         # is d1 at rank 2, so 1 / 2.
         assert reciprocal_rank_at_k(["d4", "d1"], GRADED_JUDGEMENTS, 2) == pytest.approx(0.5)
+
+
+class TestPrecisionAtK:
+    def test_nothing_relevant_in_top_one(self) -> None:
+        # Top 1 is {d1}. d1 is not relevant, so 0 / 1.
+        assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 1) == pytest.approx(0.0)
+
+    def test_one_of_three_in_top_three(self) -> None:
+        # Top 3 is {d1, d2, d3}. Only d2 is relevant, so 1 / 3.
+        assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 3) == pytest.approx(
+            0.333333, abs=TOLERANCE
+        )
+
+    def test_two_of_five_in_top_five(self) -> None:
+        # Top 5 is every document retrieved. d2 and d4 are relevant, so 2 / 5.
+        assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 5) == pytest.approx(0.4)
+
+    def test_k_beyond_ranking_length_divides_by_what_was_retrieved(self) -> None:
+        # Only five documents were retrieved, so the top 10 is still those same five: 2 / 5, the
+        # denominator is min(k, len(ranking)), not k itself.
+        assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 10) == pytest.approx(0.4)
+
+    def test_grade_zero_is_not_relevant(self) -> None:
+        # d4 is judged but graded 0. The top 6 holds d1, d2, d3, d5 and d6 as relevant and d4 as
+        # not, so 5 / 6.
+        assert precision_at_k(GRADED_RANKING, GRADED_JUDGEMENTS, 6) == pytest.approx(
+            0.833333, abs=TOLERANCE
+        )
+
+    def test_empty_ranking_scores_zero(self) -> None:
+        assert precision_at_k([], BINARY_JUDGEMENTS, 5) == pytest.approx(0.0)
 
 
 class TestMeanOverQueries:

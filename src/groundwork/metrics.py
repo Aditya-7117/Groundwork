@@ -1,4 +1,4 @@
-"""Retrieval metrics for a single query: recall@k, nDCG@k and reciprocal rank at k.
+"""Retrieval metrics for a single query: precision@k, recall@k, nDCG@k and reciprocal rank at k.
 
 The conventions match trec_eval, the reference implementation that published retrieval baselines
 are computed with, so numbers from this module are comparable with those baselines. The reasoning
@@ -85,6 +85,32 @@ def reciprocal_rank_at_k(ranking: Sequence[str], judgements: Judgements, k: int)
         if doc_id in relevant:
             return 1.0 / rank
     return 0.0
+
+
+def precision_at_k(ranking: Sequence[str], judgements: Judgements, k: int) -> float:
+    """Return the fraction of the top k retrieved items that are relevant.
+
+    The denominator is the number of items actually retrieved, min(k, len(ranking)), rather than
+    k itself, so a ranking shorter than k is not penalised for positions it never had a chance to
+    fill.
+
+    Args:
+        ranking: Document ids in rank order, best first.
+        judgements: Relevance grade per judged document id for this query.
+        k: Number of top-ranked positions to consider.
+
+    Returns:
+        A value in [0, 1].
+
+    Raises:
+        ValueError: If the input is malformed or the query has no relevant document.
+    """
+    relevant = _relevant_ids(ranking, judgements, k)
+    if not ranking:
+        return 0.0
+    retrieved = ranking[:k]
+    found = sum(1 for doc_id in retrieved if doc_id in relevant)
+    return found / len(retrieved)
 
 
 def mean_over_queries(scores: Iterable[float]) -> float:

@@ -8,7 +8,13 @@ to work out by hand.
 from hypothesis import given
 from hypothesis import strategies as st
 
-from groundwork.metrics import Judgements, ndcg_at_k, recall_at_k, reciprocal_rank_at_k
+from groundwork.metrics import (
+    Judgements,
+    ndcg_at_k,
+    precision_at_k,
+    recall_at_k,
+    reciprocal_rank_at_k,
+)
 
 DOC_IDS = [f"d{i}" for i in range(12)]
 
@@ -28,7 +34,7 @@ def _ideal_ranking(judgements: Judgements) -> list[str]:
 def test_every_metric_lies_between_zero_and_one(
     ranking: list[str], judgements: Judgements, k: int
 ) -> None:
-    for metric in (recall_at_k, ndcg_at_k, reciprocal_rank_at_k):
+    for metric in (recall_at_k, ndcg_at_k, reciprocal_rank_at_k, precision_at_k):
         assert 0.0 <= metric(ranking, judgements, k) <= 1.0
 
 
