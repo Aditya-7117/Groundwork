@@ -116,7 +116,15 @@ class LocalModels:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _FirstStage:
+class FirstStage:
+    """A built first-stage retriever.
+
+    Attributes:
+        search: Returns the ranking for one question.
+        stage_seconds: What building it took, per stage.
+        models: The neural models it uses, with revisions, device and precision.
+    """
+
     search: Searcher
     stage_seconds: dict[str, float]
     models: dict[str, object]
@@ -205,7 +213,7 @@ def run_experiment(
     stage_seconds["chunking"] = clock() - started
 
     table = ChunkTable(chunks)
-    first_stage = _first_stage(config, chunks, table, models, clock)
+    first_stage = build_first_stage(config, chunks, table, models, clock)
     stage_seconds.update(first_stage.stage_seconds)
     model_record = first_stage.models
 
@@ -288,13 +296,13 @@ def run_experiment(
     )
 
 
-def _first_stage(
+def build_first_stage(
     config: ExperimentConfig,
     chunks: Sequence[Chunk],
     table: ChunkTable,
     models: ModelProvider | None,
     clock: Clock,
-) -> _FirstStage:
+) -> FirstStage:
     """Build the first-stage searcher the config describes.
 
     The match over methods is exhaustive, so adding a method without handling it here is a type
@@ -376,7 +384,7 @@ def _first_stage(
         vector, positive_only = scores(query)
         return rank_from_scores(table, vector, depth=retrieval.depth, positive_only=positive_only)
 
-    return _FirstStage(search=search, stage_seconds=stage_seconds, models=record)
+    return FirstStage(search=search, stage_seconds=stage_seconds, models=record)
 
 
 def _select(

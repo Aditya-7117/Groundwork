@@ -9,6 +9,7 @@
     groundwork golden               write the golden slice of the corpus for the regression gate
     groundwork report               assemble every published number from the run artefacts
     groundwork site                 write the explorer's data files from the artefacts
+    groundwork serve                serve the explorer, with live search over chosen setups
     groundwork gate BASELINE        re-run the golden slice and fail if retrieval got worse
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
@@ -23,6 +24,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+import uvicorn
 
 from groundwork.answering import (
     AnsweringError,
@@ -67,6 +70,7 @@ from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
 from groundwork.report import ReportError, build_report, markdown
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
+from groundwork.serve import build_live_setup, create_app
 from groundwork.site import StageTwoInputs, export_site
 from groundwork.verdicts import CostGuard, entailment_with, judge_all, score_answers
 
@@ -135,6 +139,7 @@ def main(
         "label": lambda: _label(arguments.answers, arguments.results_dir),
         "golden": lambda: _golden(data_dir, arguments.out),
         "site": lambda: _site(arguments, data_dir),
+        "serve": lambda: _serve(arguments, data_dir),
         "report": lambda: _report(
             arguments.results_dir, arguments.verdicts, arguments.labels, now=clock
         ),
@@ -396,6 +401,22 @@ def _site(arguments: argparse.Namespace, data_dir: Path) -> int:
     return 0
 
 
+def _serve(arguments: argparse.Namespace, data_dir: Path) -> int:
+    """Build each live setup once, then serve the site and live search until stopped."""
+    configs = [load_config(path) for path in arguments.live]
+    evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
+    models = LocalModels(
+        cache_dir=data_dir / "embeddings",
+        weights_dir=data_dir / "huggingface" / "hub",
+        device=arguments.device,
+    )
+    live = {config.name: build_live_setup(config, evaluation_set, models) for config in configs}
+    uvicorn.run(
+        create_app(live, arguments.site), host=arguments.host, port=arguments.port, log_config=None
+    )
+    return 0
+
+
 def _golden(data_dir: Path, out: Path) -> int:
     """Write the golden slice: 100 stratified questions, their pages and 200 distractors."""
     build_golden(
@@ -516,6 +537,16 @@ def _parser() -> argparse.ArgumentParser:
     site.add_argument("--results-dir", type=Path, default=Path("results"), help="runs")
     site.add_argument(
         "--out", type=Path, default=Path("results/site/data"), help="output directory"
+    )
+    serve = commands.add_parser("serve", help="serve the explorer with live search")
+    serve.add_argument(
+        "--live", type=Path, nargs="*", default=[], help="config files of the live setups"
+    )
+    serve.add_argument("--site", type=Path, default=None, help="the built explorer directory")
+    serve.add_argument("--host", default="127.0.0.1", help="interface (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=8000, help="port (default: 8000)")
+    serve.add_argument(
+        "--device", choices=["cpu", "mps"], default=None, help="where models run (default: best)"
     )
     golden = commands.add_parser("golden", help="write the golden slice for the regression gate")
     golden.add_argument(
