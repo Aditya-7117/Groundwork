@@ -8,6 +8,7 @@
     groundwork label ANSWERS_DIR    label a blind sample of answers by hand
     groundwork golden               write the golden slice of the corpus for the regression gate
     groundwork report               assemble every published number from the run artefacts
+    groundwork site                 write the explorer's data files from the artefacts
     groundwork gate BASELINE        re-run the golden slice and fail if retrieval got worse
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
@@ -66,6 +67,7 @@ from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
 from groundwork.report import ReportError, build_report, markdown
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
+from groundwork.site import StageTwoInputs, export_site
 from groundwork.verdicts import CostGuard, entailment_with, judge_all, score_answers
 
 logger = logging.getLogger(__name__)
@@ -132,6 +134,7 @@ def main(
         ),
         "label": lambda: _label(arguments.answers, arguments.results_dir),
         "golden": lambda: _golden(data_dir, arguments.out),
+        "site": lambda: _site(arguments, data_dir),
         "report": lambda: _report(
             arguments.results_dir, arguments.verdicts, arguments.labels, now=clock
         ),
@@ -364,6 +367,35 @@ def _report(results_dir: Path, verdicts: Path | None, labels: Path | None, *, no
     return 0
 
 
+def _site(arguments: argparse.Namespace, data_dir: Path) -> int:
+    """Write the explorer's data files: the report plus every grid setup, and stage two if given."""
+    results_dir: Path = arguments.results_dir
+    setups = [setup.name for setup in grid()]
+    report = build_report(
+        results_dir,
+        setups,
+        verdicts_dir=arguments.verdicts,
+        labels_path=arguments.labels,
+        seed=1,
+    )
+    stage_two = None
+    if arguments.answers is not None and arguments.verdicts is not None:
+        stage_two = StageTwoInputs(
+            answers_dir=arguments.answers,
+            verdicts_dir=arguments.verdicts,
+            labels_path=arguments.labels,
+        )
+    export_site(
+        report,
+        {setup: latest_run(results_dir, setup) for setup in setups},
+        load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built"),
+        arguments.out,
+        stage_two=stage_two,
+    )
+    logger.info("site data written", extra={"path": str(arguments.out)})
+    return 0
+
+
 def _golden(data_dir: Path, out: Path) -> int:
     """Write the golden slice: 100 stratified questions, their pages and 200 distractors."""
     build_golden(
@@ -476,6 +508,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("results"),
         help="runs and output (default: results)",
+    )
+    site = commands.add_parser("site", help="write the explorer's data files")
+    site.add_argument("--answers", type=Path, default=None, help="a stage-two answers run")
+    site.add_argument("--verdicts", type=Path, default=None, help="its verdicts run")
+    site.add_argument("--labels", type=Path, default=None, help="the hand labels file")
+    site.add_argument("--results-dir", type=Path, default=Path("results"), help="runs")
+    site.add_argument(
+        "--out", type=Path, default=Path("results/site/data"), help="output directory"
     )
     golden = commands.add_parser("golden", help="write the golden slice for the regression gate")
     golden.add_argument(

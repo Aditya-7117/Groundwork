@@ -46,3 +46,6 @@ tmp/
 # Downloaded corpora and run outputs
 data/
 results/
+
+# Explorer
+node_modules/
