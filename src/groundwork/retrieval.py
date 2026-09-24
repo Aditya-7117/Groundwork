@@ -24,6 +24,7 @@ class ChunkTable:
         """Index chunks by position, page and sorted id."""
         self.chunks = tuple(chunks)
         count = len(self.chunks)
+        self.position = {chunk.chunk_id: index for index, chunk in enumerate(self.chunks)}
         by_id = sorted(range(count), key=lambda position: self.chunks[position].chunk_id)
         self.id_rank = np.empty(count, dtype=np.int64)
         self.id_rank[by_id] = np.arange(count, dtype=np.int64)
@@ -87,3 +88,36 @@ def rank_from_scores(
         for position in np.sort(first_seen)[:depth]
     )
     return Retrieval(chunks=ranked_chunks, pages=ranked_pages)
+
+
+def fuse_reciprocal_rank(
+    table: ChunkTable,
+    score_vectors: Sequence[NDArray[np.float64]],
+    *,
+    k: int,
+    candidates: int,
+    positive_only: Sequence[bool],
+) -> NDArray[np.float64]:
+    """Merge several rankings with reciprocal rank fusion.
+
+    Each ranking contributes 1 / (k + rank) to every chunk in its top `candidates`. Ranks, not
+    raw scores, are combined, so a keyword score and a cosine similarity never need to be put on
+    the same scale. k = 60 is the value from the method's original paper (Cormack, Clarke and
+    Buettcher, 2009).
+
+    Returns:
+        A fused score per chunk; chunks outside every top list score 0.
+
+    Raises:
+        ValueError: If k or candidates is below 1, or the inputs disagree in length.
+    """
+    if k < 1 or candidates < 1:
+        raise ValueError(f"k and candidates must be at least 1, got {k} and {candidates}")
+    if len(score_vectors) != len(positive_only):
+        raise ValueError("score_vectors and positive_only must have the same length")
+    fused = np.zeros(len(table), dtype=np.float64)
+    for scores, positive in zip(score_vectors, positive_only, strict=True):
+        ranked = rank_from_scores(table, scores, depth=candidates, positive_only=positive)
+        for rank, item in enumerate(ranked.chunks, start=1):
+            fused[table.position[item.chunk.chunk_id]] += 1.0 / (k + rank)
+    return fused

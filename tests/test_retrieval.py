@@ -13,7 +13,7 @@ from hypothesis import strategies as st
 from groundwork.bm25 import BM25Index, SparseBM25
 from groundwork.chunking import Chunk
 from groundwork.ranking import rank_pages_by_best_chunk
-from groundwork.retrieval import ChunkTable, rank_from_scores
+from groundwork.retrieval import ChunkTable, fuse_reciprocal_rank, rank_from_scores
 
 VOCABULARY = ["tea", "river", "ring", "rings", "black", "green", "shannon", "gas", "giant", "the"]
 
@@ -96,3 +96,51 @@ class TestRankFromScores:
             ChunkTable(chunks), np.array([0.0, 2.0]), depth=5, positive_only=True
         )
         assert [s.chunk.chunk_id for s in result.chunks] == ["p1#0"]
+
+
+THREE = (chunk("p0", 0, "x"), chunk("p1", 0, "y"), chunk("p2", 0, "z"))
+
+
+class TestReciprocalRankFusion:
+    def test_hand_worked_fusion(self) -> None:
+        # Keyword order: p0, p1, p2. Embedding order: p2, p0, p1. With k = 60:
+        #   p0 = 1/61 + 1/62,  p1 = 1/62 + 1/63,  p2 = 1/63 + 1/61.
+        keyword = np.array([3.0, 2.0, 1.0])
+        embedding = np.array([0.5, 0.1, 0.9])
+        fused = fuse_reciprocal_rank(
+            ChunkTable(THREE),
+            [keyword, embedding],
+            k=60,
+            candidates=3,
+            positive_only=[True, False],
+        )
+        assert fused.tolist() == pytest.approx([1 / 61 + 1 / 62, 1 / 62 + 1 / 63, 1 / 63 + 1 / 61])
+        assert list(np.argsort(-fused)) == [0, 2, 1]
+
+    def test_only_each_rankings_top_candidates_contribute(self) -> None:
+        fused = fuse_reciprocal_rank(
+            ChunkTable(THREE),
+            [np.array([3.0, 2.0, 1.0])],
+            k=60,
+            candidates=2,
+            positive_only=[True],
+        )
+        assert fused.tolist() == pytest.approx([1 / 61, 1 / 62, 0.0])
+
+    def test_a_chunk_bm25_did_not_retrieve_gets_nothing_from_bm25(self) -> None:
+        # A zero BM25 score means the chunk shares no word with the question; it has no rank.
+        fused = fuse_reciprocal_rank(
+            ChunkTable(THREE),
+            [np.array([2.0, 0.0, 0.0])],
+            k=60,
+            candidates=3,
+            positive_only=[True],
+        )
+        assert fused.tolist() == pytest.approx([1 / 61, 0.0, 0.0])
+
+    def test_rejects_bad_parameters(self) -> None:
+        table = ChunkTable(THREE)
+        with pytest.raises(ValueError, match="at least 1"):
+            fuse_reciprocal_rank(table, [np.ones(3)], k=0, candidates=3, positive_only=[True])
+        with pytest.raises(ValueError, match="same length"):
+            fuse_reciprocal_rank(table, [np.ones(3)], k=60, candidates=3, positive_only=[])
