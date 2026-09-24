@@ -34,6 +34,7 @@ from groundwork.config import ExperimentConfig, StageTwoConfig, config_digest
 from groundwork.experiment import ExperimentResult
 from groundwork.generation import CONTEXT_TOKENS, SYSTEM_PROMPT
 from groundwork.judging import CORRECTNESS, GROUNDEDNESS
+from groundwork.timing import Timing, summarise_timings
 from groundwork.verdicts import (
     GEMINI_PRICE,
     LEXICAL_SUPPORTED,
@@ -296,6 +297,58 @@ def write_verdicts_artefact(record: VerdictsRecord, results_dir: Path) -> Path:
         results_dir / f"{config.name}-verdicts",
         f"{record.started_at:%Y%m%dT%H%M%SZ}-{digest[:12]}",
         {"scored.jsonl": rows, "result.json": json.dumps(document, indent=2) + "\n"},
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TimingRecord:
+    """Everything that goes into one re-timing artefact.
+
+    Attributes:
+        config: The stage-two config the answers were written under.
+        answers_dir: The answers whose prompts were re-sent.
+        timings: Every re-timed call.
+        writer_digest: Digest of the exact writer weights.
+        started_at: UTC start, after the warm-up call.
+        finished_at: UTC finish.
+    """
+
+    config: StageTwoConfig
+    answers_dir: Path
+    timings: tuple[Timing, ...]
+    writer_digest: str
+    started_at: datetime
+    finished_at: datetime
+
+
+def write_timing_artefact(record: TimingRecord, results_dir: Path) -> Path:
+    """Write a re-timing run under results/<stage-two name>-timing/, pointing back to the answers.
+
+    Raises:
+        ArtefactError: If the directory already exists.
+    """
+    config = record.config
+    document = {
+        "schema_version": STAGE_TWO_SCHEMA_VERSION,
+        "answers": record.answers_dir.as_posix(),
+        "method": (
+            f"the same seeded sample (seed {config.seed}) of each setup's prompts re-sent as "
+            "uncached calls in one session, after one unrecorded warm-up call"
+        ),
+        "writer": {"model": config.writer, "digest": record.writer_digest},
+        "code": asdict(current_code_version()),
+        "environment": describe_environment(),
+        "timing": {
+            "started_at": record.started_at.isoformat(),
+            "finished_at": record.finished_at.isoformat(),
+        },
+        "setups": summarise_timings(record.timings),
+    }
+    rows = "".join(json.dumps(asdict(timing)) + "\n" for timing in record.timings)
+    return _publish(
+        results_dir / f"{config.name}-timing",
+        f"{record.started_at:%Y%m%dT%H%M%SZ}-{config_digest(config)[:12]}",
+        {"timing.json": json.dumps(document, indent=2) + "\n", "timings.jsonl": rows},
     )
 
 

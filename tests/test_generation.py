@@ -123,3 +123,13 @@ def test_a_missing_model_names_the_available_ones(tmp_path: Path) -> None:
             seed=1,
             client=JsonClient(transport=FakeOllama()),
         )
+
+
+def test_a_fresh_call_bypasses_and_leaves_the_cache(tmp_path: Path) -> None:
+    server = FakeOllama()
+    answers = writer(tmp_path, server)
+    answers.write("q", ["p"])
+    timed = answers.write("q", ["p"], fresh=True)
+    assert len(server.chats) == 2
+    assert not timed.cached
+    assert len(ResponseCache(tmp_path / "answers.jsonl")) == 1

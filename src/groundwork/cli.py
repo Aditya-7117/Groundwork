@@ -6,6 +6,7 @@
     groundwork answer CONFIG        write answers from chosen setups' latest retrieval runs
     groundwork judge ANSWERS_DIR    score answers by the judge, NLI, word overlap and containment
     groundwork label ANSWERS_DIR    label a blind sample of answers by hand
+    groundwork retime ANSWERS_DIR   measure generation latency on a fixed sample, uncached
     groundwork golden               write the golden slice of the corpus for the regression gate
     groundwork report               assemble every published number from the run artefacts
     groundwork site                 write the explorer's data files from the artefacts
@@ -38,12 +39,14 @@ from groundwork.artefact import (
     ArtefactError,
     RunRecord,
     StageTwoRecord,
+    TimingRecord,
     VerdictsRecord,
     current_code_version,
     describe_environment,
     write_artefact,
     write_report,
     write_stage_two_artefact,
+    write_timing_artefact,
     write_verdicts_artefact,
 )
 from groundwork.baselines import NliChecker
@@ -72,6 +75,7 @@ from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
 from groundwork.serve import build_live_setup, create_app
 from groundwork.site import StageTwoInputs, export_site
+from groundwork.timing import SAMPLE, retime, timing_sample
 from groundwork.verdicts import CostGuard, entailment_with, judge_all, score_answers
 
 logger = logging.getLogger(__name__)
@@ -137,6 +141,9 @@ def main(
             now=clock,
         ),
         "label": lambda: _label(arguments.answers, arguments.results_dir),
+        "retime": lambda: _retime(
+            arguments.answers, data_dir, arguments.results_dir, sample=arguments.sample, now=clock
+        ),
         "golden": lambda: _golden(data_dir, arguments.out),
         "site": lambda: _site(arguments, data_dir),
         "serve": lambda: _serve(arguments, data_dir),
@@ -290,6 +297,38 @@ def _answer(config_path: Path, data_dir: Path, results_dir: Path, *, now: Now) -
         results_dir,
     )
     logger.info("answers complete", extra={"artefact": str(directory), "answers": len(answers)})
+    return 0
+
+
+def _retime(answers_dir: Path, data_dir: Path, results_dir: Path, *, sample: int, now: Now) -> int:
+    """Re-send a fixed sample of each setup's prompts as real calls and record their latency."""
+    document = json.loads((answers_dir / "result.json").read_text(encoding="utf-8"))
+    config = StageTwoConfig.model_validate(document["experiment"]["config"])
+    answers = load_answers(answers_dir / "answers.jsonl")
+    writer = OllamaWriter(
+        model=config.writer,
+        cache=ResponseCache(data_dir / "cache" / "answers.jsonl"),
+        seed=config.seed,
+    )
+    chosen = timing_sample(answers, size=sample, seed=config.seed)
+    # One unrecorded call first, so loading the model into memory is not counted as latency.
+    writer.write(chosen[0].question, chosen[0].passages, fresh=True)
+    started_at = now()
+    timings = retime(
+        chosen, lambda question, passages: writer.write(question, passages, fresh=True)
+    )
+    directory = write_timing_artefact(
+        TimingRecord(
+            config=config,
+            answers_dir=answers_dir,
+            timings=timings,
+            writer_digest=writer.digest,
+            started_at=started_at,
+            finished_at=now(),
+        ),
+        results_dir,
+    )
+    logger.info("re-timing written", extra={"path": str(directory), "answers": len(timings)})
     return 0
 
 
@@ -562,6 +601,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     gate.add_argument(
         "--record", action="store_true", help="re-record the baseline metrics instead of checking"
+    )
+    retime_parser = commands.add_parser(
+        "retime", help="measure generation latency on a fixed sample of uncached calls"
+    )
+    retime_parser.add_argument("answers", type=Path, help="a stage-two answers run")
+    retime_parser.add_argument(
+        "--sample", type=int, default=SAMPLE, help=f"prompts per setup (default: {SAMPLE})"
+    )
+    retime_parser.add_argument(
+        "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
     )
     label = commands.add_parser("label", help="label a blind sample of answers by hand")
     label.add_argument("answers", type=Path, help="a stage-two run directory")

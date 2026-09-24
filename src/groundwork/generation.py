@@ -132,8 +132,14 @@ class OllamaWriter:
         self._client = client or JsonClient()
         self.digest = self._find_digest()
 
-    def write(self, question: str, passages: Sequence[str]) -> Generation:
+    def write(self, question: str, passages: Sequence[str], *, fresh: bool = False) -> Generation:
         """Answer one question from its passages.
+
+        Args:
+            question: The question.
+            passages: The passages to answer from.
+            fresh: Call the model even if the answer is cached, and leave the cache untouched; for
+                measuring latency under controlled conditions (decision 75).
 
         Raises:
             GenerationError: If the call fails or the reply cannot be read.
@@ -150,7 +156,7 @@ class OllamaWriter:
             },
         }
         key = request_key({"digest": self.digest, **payload})
-        response = self._cache.get(key)
+        response = None if fresh else self._cache.get(key)
         cached = response is not None
         if response is None:
             try:
@@ -159,7 +165,8 @@ class OllamaWriter:
                 )
             except RemoteError as error:
                 raise GenerationError(str(error)) from error
-            self._cache.put(key, response)
+            if not fresh:
+                self._cache.put(key, response)
         reply = _parse(_ChatReply, response)
         if reply.done_reason and reply.done_reason != "stop":
             logger.warning("answer did not finish cleanly", extra={"reason": reply.done_reason})
