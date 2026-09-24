@@ -7,6 +7,7 @@
     groundwork judge ANSWERS_DIR    score answers by the judge, NLI, word overlap and containment
     groundwork label ANSWERS_DIR    label a blind sample of answers by hand
     groundwork golden               write the golden slice of the corpus for the regression gate
+    groundwork report               assemble every published number from the run artefacts
     groundwork gate BASELINE        re-run the golden slice and fail if retrieval got worse
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
@@ -37,6 +38,7 @@ from groundwork.artefact import (
     current_code_version,
     describe_environment,
     write_artefact,
+    write_report,
     write_stage_two_artefact,
     write_verdicts_artefact,
 )
@@ -56,11 +58,12 @@ from groundwork.experiment import LocalModels, ModelProvider, run_experiment
 from groundwork.gate import GateError, record_baseline, run_gate
 from groundwork.generation import GenerationError, OllamaWriter
 from groundwork.golden import build_golden
-from groundwork.grid import write_grid
+from groundwork.grid import grid, write_grid
 from groundwork.judging import GeminiJudge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
+from groundwork.report import ReportError, build_report, markdown
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
 from groundwork.verdicts import CostGuard, entailment_with, judge_all, score_answers
@@ -81,6 +84,7 @@ _FAILURES = (
     LabellingError,
     JudgeError,
     GateError,
+    ReportError,
 )
 
 
@@ -128,6 +132,9 @@ def main(
         ),
         "label": lambda: _label(arguments.answers, arguments.results_dir),
         "golden": lambda: _golden(data_dir, arguments.out),
+        "report": lambda: _report(
+            arguments.results_dir, arguments.verdicts, arguments.labels, now=clock
+        ),
         "gate": lambda: _gate(
             arguments.baseline,
             LocalModels(
@@ -343,6 +350,20 @@ def _judge(
     return 0
 
 
+def _report(results_dir: Path, verdicts: Path | None, labels: Path | None, *, now: Now) -> int:
+    """Write the report over the whole grid, plus stage two and the labels once they exist."""
+    report = build_report(
+        results_dir,
+        [setup.name for setup in grid()],
+        verdicts_dir=verdicts,
+        labels_path=labels,
+        seed=1,
+    )
+    directory = write_report(report, markdown(report), results_dir, now())
+    logger.info("report written", extra={"path": str(directory), "winner": report["significance"]})
+    return 0
+
+
 def _golden(data_dir: Path, out: Path) -> int:
     """Write the golden slice: 100 stratified questions, their pages and 200 distractors."""
     build_golden(
@@ -446,6 +467,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     judge.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
+    )
+    report = commands.add_parser("report", help="assemble every published number")
+    report.add_argument("--verdicts", type=Path, default=None, help="a stage-two verdicts run")
+    report.add_argument("--labels", type=Path, default=None, help="the hand labels file")
+    report.add_argument(
+        "--results-dir",
+        type=Path,
+        default=Path("results"),
+        help="runs and output (default: results)",
     )
     golden = commands.add_parser("golden", help="write the golden slice for the regression gate")
     golden.add_argument(

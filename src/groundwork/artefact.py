@@ -299,6 +299,21 @@ def write_verdicts_artefact(record: VerdictsRecord, results_dir: Path) -> Path:
     )
 
 
+def write_report(
+    report: Mapping[str, object], summary: str, results_dir: Path, moment: datetime
+) -> Path:
+    """Write a report as results/report/<UTC time>/report.json and report.md.
+
+    Raises:
+        ArtefactError: If the directory already exists.
+    """
+    return _publish(
+        results_dir / "report",
+        f"{moment:%Y%m%dT%H%M%SZ}",
+        {"report.json": json.dumps(report, indent=2) + "\n", "report.md": summary},
+    )
+
+
 def _run_provenance(run_dir: Path) -> dict[str, object]:
     """Which retrieval run was answered, and the code and config that produced it."""
     document = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
