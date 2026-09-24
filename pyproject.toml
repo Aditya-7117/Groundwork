@@ -22,6 +22,7 @@ dev = [
     "hypothesis>=6.168",
     "mypy>=2.3",
     "pytest>=9.1",
+    "pytrec-eval-terrier>=0.5.10",
     "ruff>=0.16",
 ]
 
