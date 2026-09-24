@@ -7,8 +7,9 @@ reshapes what the report and the runs recorded, so the explorer can never disagr
 Files, under the output directory:
 - report.json: the report, unchanged.
 - questions.json: each question's text, answer type, reference answers and page title.
-- setups/<setup>.json: one setup's aggregate metrics and, per question, its metrics and top ten
-  passages, each with its heading and whether it holds the answer.
+- setups/<setup>.json: one setup's aggregate metrics and, per question, the four metrics the
+  explorer shows (rounded for display; the artefacts keep full precision) and its top ten passages
+  as [heading index, holds the answer, is a table], with each distinct heading stored once.
 - stage2/<setup>.json: that setup's answers, the passages each was written from, and every
   rung's verdict.
 - judge.json: agreement between the rungs, and every answer where the judge and the hand label
@@ -31,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 TOP = 10
 """Passages shown per question in the drill-down."""
+
+QUESTION_METRICS = ("passage.recall@10", "passage.ndcg@10", "passage.rr@10", "page.recall@10")
+"""The per-question metrics the explorer shows, in the order each question's list holds them."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -130,22 +134,21 @@ def setup_file(
     chunks_by_page: dict[str, list[Chunk]] = defaultdict(list)
     for chunk in chunks.values():
         chunks_by_page[chunk.page_id].append(chunk)
+    headings: dict[str, int] = {}
     questions: dict[str, object] = {}
     for question in evaluation_set.questions:
         if question.question_id not in per_question:
             continue
         relevant = chunk_relevance(question, chunks_by_page)
+        values = _mapping(per_question[question.question_id])
+        top = []
+        for chunk_id in ranking.get(question.question_id, ()):
+            heading = chunks[chunk_id].text.partition("\n")[0]
+            index = headings.setdefault(heading, len(headings))
+            top.append([index, int(chunk_id in relevant), int(chunks[chunk_id].kind == "table")])
         questions[question.question_id] = {
-            "metrics": per_question[question.question_id],
-            "top": [
-                {
-                    "id": chunk_id,
-                    "heading": chunks[chunk_id].text.partition("\n")[0],
-                    "kind": chunks[chunk_id].kind,
-                    "relevant": chunk_id in relevant,
-                }
-                for chunk_id in ranking.get(question.question_id, ())
-            ],
+            "metrics": [round(float(str(values[name])), 4) for name in QUESTION_METRICS],
+            "top": top,
         }
     experiment = _mapping(document["experiment"])
     return {
@@ -157,6 +160,8 @@ def setup_file(
         "timing": document["timing"],
         "models": document.get("models", {}),
         "chunks": _mapping(document["corpus"])["chunks"],
+        "question_metrics": list(QUESTION_METRICS),
+        "headings": list(headings),
         "questions": questions,
     }
 

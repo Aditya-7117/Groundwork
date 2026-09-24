@@ -34,10 +34,13 @@ def test_every_setup_gets_its_questions_with_top_passages(tmp_path: Path) -> Non
 
     setup = json.loads((out / "setups" / "alpha.json").read_text(encoding="utf-8"))
     assert setup["setup"] == "alpha"
+    assert setup["question_metrics"][:2] == ["passage.recall@10", "passage.ndcg@10"]
     q1 = setup["questions"]["q1"]
-    assert set(q1["metrics"]) >= {"passage.recall@10", "passage.ndcg@10"}
-    assert q1["top"][0]["heading"] == "River Shannon"
-    assert any(passage["relevant"] for passage in q1["top"])
+    assert len(q1["metrics"]) == 4
+    heading, _, table = q1["top"][0]
+    assert setup["headings"][heading] == "River Shannon"
+    assert table == 0
+    assert any(passage[1] for passage in q1["top"])
     questions = json.loads((out / "questions.json").read_text(encoding="utf-8"))
     assert questions["q2"] == {
         "question": "largest gas giant planet",
