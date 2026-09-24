@@ -84,12 +84,19 @@ def get_reranker(key: str) -> RerankerModel:
 class CrossEncoderScorer:
     """A real cross-encoder on the Apple GPU in half precision (decision 46)."""
 
-    def __init__(self, model: RerankerModel, *, cache_dir: Path, batch_size: int = 32) -> None:
-        """Load the pinned model weights."""
+    def __init__(
+        self,
+        model: RerankerModel,
+        *,
+        cache_dir: Path,
+        device: str | None = None,
+        batch_size: int = 32,
+    ) -> None:
+        """Load the pinned weights; on the Apple GPU if present, unless a device is given."""
         import torch  # noqa: PLC0415 -- heavy import, only paid when reranking is used
         from sentence_transformers import CrossEncoder  # noqa: PLC0415
 
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
         dtype = torch.float16 if device == "mps" else torch.float32
         self._model = CrossEncoder(
             model.name,

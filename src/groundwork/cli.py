@@ -6,6 +6,8 @@
     groundwork answer CONFIG        write answers from chosen setups' latest retrieval runs
     groundwork judge ANSWERS_DIR    score answers by the judge, NLI, word overlap and containment
     groundwork label ANSWERS_DIR    label a blind sample of answers by hand
+    groundwork golden               write the golden slice of the corpus for the regression gate
+    groundwork gate BASELINE        re-run the golden slice and fail if retrieval got worse
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
 written, are command-line options rather than config fields, so the same experiment has the same
@@ -51,7 +53,9 @@ from groundwork.download import SourceError
 from groundwork.embeddings import EmbeddingError
 from groundwork.evaluation import EvaluationSet, EvaluationSetError, load_built_corpus
 from groundwork.experiment import LocalModels, ModelProvider, run_experiment
+from groundwork.gate import GateError, record_baseline, run_gate
 from groundwork.generation import GenerationError, OllamaWriter
+from groundwork.golden import build_golden
 from groundwork.grid import write_grid
 from groundwork.judging import GeminiJudge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
@@ -76,6 +80,7 @@ _FAILURES = (
     GenerationError,
     LabellingError,
     JudgeError,
+    GateError,
 )
 
 
@@ -122,6 +127,16 @@ def main(
             now=clock,
         ),
         "label": lambda: _label(arguments.answers, arguments.results_dir),
+        "golden": lambda: _golden(data_dir, arguments.out),
+        "gate": lambda: _gate(
+            arguments.baseline,
+            LocalModels(
+                cache_dir=data_dir / "embeddings",
+                weights_dir=data_dir / "huggingface" / "hub",
+                device=arguments.device,
+            ),
+            record=arguments.record,
+        ),
     }
     try:
         return commands[arguments.command]()
@@ -328,6 +343,37 @@ def _judge(
     return 0
 
 
+def _golden(data_dir: Path, out: Path) -> int:
+    """Write the golden slice: 100 stratified questions, their pages and 200 distractors."""
+    build_golden(
+        data_dir / NATURAL_QUESTIONS.name / "built", out, questions=100, distractors=200, seed=1
+    )
+    return 0
+
+
+def _gate(baseline: Path, models: ModelProvider, *, record: bool) -> int:
+    """Run the regression gate, or re-record its baseline when a change is meant to move it."""
+    if record:
+        recorded = record_baseline(baseline, models)
+        logger.info("baseline recorded", extra={"path": str(baseline), **_flatten(recorded)})
+        return 0
+    checks = run_gate(baseline, models)
+    failed = [check for check in checks if not check.passed]
+    if failed:
+        logger.error("regression gate failed", extra={"failed": len(failed), "of": len(checks)})
+        return 1
+    logger.info("regression gate passed", extra={"checks": len(checks)})
+    return 0
+
+
+def _flatten(recorded: dict[str, dict[str, float]]) -> dict[str, float]:
+    return {
+        f"{setup}.{metric}": value
+        for setup, row in recorded.items()
+        for metric, value in row.items()
+    }
+
+
 def _load(config: ExperimentConfig, data_dir: Path) -> EvaluationSet:
     """Load the evaluation set the config names.
 
@@ -400,6 +446,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     judge.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
+    )
+    golden = commands.add_parser("golden", help="write the golden slice for the regression gate")
+    golden.add_argument(
+        "--out",
+        type=Path,
+        default=Path("tests/golden/corpus"),
+        help="output (default: tests/golden/corpus)",
+    )
+    gate = commands.add_parser("gate", help="re-run the golden slice and fail on a regression")
+    gate.add_argument("baseline", type=Path, help="baseline file, e.g. tests/golden/baseline.json")
+    gate.add_argument(
+        "--device", choices=["cpu", "mps"], default=None, help="where models run (default: best)"
+    )
+    gate.add_argument(
+        "--record", action="store_true", help="re-record the baseline metrics instead of checking"
     )
     label = commands.add_parser("label", help="label a blind sample of answers by hand")
     label.add_argument("answers", type=Path, help="a stage-two run directory")

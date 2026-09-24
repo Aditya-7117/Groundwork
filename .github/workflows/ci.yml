@@ -11,7 +11,7 @@ jobs:
   checks:
     name: Lint, types and tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       HYPOTHESIS_PROFILE: ci
     steps:
@@ -25,6 +25,14 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked
 
+      - name: Cache model weights and sentence data
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            data/huggingface
+            data/nltk_data
+          key: models-minilm-1110a243-punkt-tab
+
       - name: Lint
         run: uv run --no-sync ruff check .
 
@@ -36,3 +44,6 @@ jobs:
 
       - name: Tests
         run: uv run --no-sync pytest
+
+      - name: Regression gate
+        run: uv run --no-sync groundwork gate tests/golden/baseline.json --device cpu

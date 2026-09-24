@@ -116,14 +116,21 @@ def get_model(key: str) -> EmbeddingModel:
 
 
 class SentenceTransformerEncoder:
-    """A real model, run on the Apple GPU in half precision (decision 46)."""
+    """A real model: half precision on the Apple GPU (decision 46), full precision on a CPU."""
 
-    def __init__(self, model: EmbeddingModel, *, cache_dir: Path, batch_size: int = 32) -> None:
-        """Load the pinned model weights."""
+    def __init__(
+        self,
+        model: EmbeddingModel,
+        *,
+        cache_dir: Path,
+        device: str | None = None,
+        batch_size: int = 32,
+    ) -> None:
+        """Load the pinned weights; on the Apple GPU if present, unless a device is given."""
         import torch  # noqa: PLC0415 -- heavy import, only paid when a model is actually used
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
         dtype = torch.float16 if device == "mps" else torch.float32
         self._model = SentenceTransformer(
             model.name,

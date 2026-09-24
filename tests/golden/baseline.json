@@ -1,0 +1,24 @@
+{
+  "corpus": "tests/golden/corpus",
+  "note": "Regenerate metrics with `groundwork gate tests/golden/baseline.json --device cpu --record` only when a change is meant to move them, and commit the new values with that change.",
+  "setups": {
+    "gate-bm25": {
+      "config": "configs/gate/gate-bm25.toml",
+      "tolerance": 0.0,
+      "metrics": {
+        "passage.recall@10": 0.6336634671320536,
+        "passage.ndcg@10": 0.42675380582027644
+      },
+      "tolerance_basis": "BM25 is exact integer counting and deterministic arithmetic: repeated runs on the development machine gave identical metrics (measured 24 Sep 2026), so any drop is a change."
+    },
+    "gate-minilm": {
+      "config": "configs/gate/gate-minilm.toml",
+      "tolerance": 0.0,
+      "metrics": {
+        "passage.recall@10": 0.7358162449098313,
+        "passage.ndcg@10": 0.472462879365889
+      },
+      "tolerance_basis": "Fresh CPU encodes on the development machine were bit-identical (measured 24 Sep 2026). Other processors can round the last bits differently and swap near-tied chunks; that difference is measured on the first CI run and the tolerance set from it."
+    }
+  }
+}

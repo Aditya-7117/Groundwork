@@ -85,10 +85,11 @@ class ModelProvider(Protocol):
 class LocalModels:
     """Real models, loaded on first use and kept for the rest of the process."""
 
-    def __init__(self, *, cache_dir: Path, weights_dir: Path) -> None:
-        """Remember where chunk vectors and model weights are cached."""
+    def __init__(self, *, cache_dir: Path, weights_dir: Path, device: str | None = None) -> None:
+        """Remember where vectors and weights are cached, and where models run (None: best)."""
         self._cache_dir = cache_dir
         self._weights_dir = weights_dir
+        self._device = device
         self._encoders: dict[str, Encoder] = {}
         self._scorers: dict[str, ReusingScorer] = {}
 
@@ -101,7 +102,7 @@ class LocalModels:
         """Load an embedding model once."""
         if model.key not in self._encoders:
             self._encoders[model.key] = SentenceTransformerEncoder(
-                model, cache_dir=self._weights_dir
+                model, cache_dir=self._weights_dir, device=self._device
             )
         return self._encoders[model.key]
 
@@ -109,7 +110,7 @@ class LocalModels:
         """Load a reranker once, reusing its scores across every run in this process."""
         if model.key not in self._scorers:
             self._scorers[model.key] = ReusingScorer(
-                CrossEncoderScorer(model, cache_dir=self._weights_dir)
+                CrossEncoderScorer(model, cache_dir=self._weights_dir, device=self._device)
             )
         return self._scorers[model.key]
 
