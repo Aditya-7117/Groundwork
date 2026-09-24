@@ -102,7 +102,7 @@ class TestWrites:
 
     def test_the_result_records_what_produced_the_numbers(self, tmp_path: Path) -> None:
         document = read(write_artefact(RECORD, tmp_path))
-        assert document["schema_version"] == SCHEMA_VERSION == 3
+        assert document["schema_version"] == SCHEMA_VERSION == 4
         assert document["provisional"] is False
         experiment = document["experiment"]
         assert isinstance(experiment, dict)
@@ -128,6 +128,7 @@ class TestWrites:
             "selection": "all evaluable queries",
             "excluded_no_chunk_covers_the_answer": ["q9"],
             "by_answer_type": {"table": 1},
+            "answer_types": {"q1": "table"},
         }
 
     def test_metrics_are_recorded_overall_by_type_and_per_question(self, tmp_path: Path) -> None:
