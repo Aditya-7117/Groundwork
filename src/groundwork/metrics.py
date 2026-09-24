@@ -88,11 +88,10 @@ def reciprocal_rank_at_k(ranking: Sequence[str], judgements: Judgements, k: int)
 
 
 def precision_at_k(ranking: Sequence[str], judgements: Judgements, k: int) -> float:
-    """Return the fraction of the top k retrieved items that are relevant.
+    """Return the fraction of the top k positions that hold a relevant item.
 
-    The denominator is the number of items actually retrieved, min(k, len(ranking)), rather than
-    k itself, so a ranking shorter than k is not penalised for positions it never had a chance to
-    fill.
+    The denominator is k, as in trec_eval: a ranking shorter than k counts its empty positions as
+    misses, because an empty slot gave the reader nothing (decision 70).
 
     Args:
         ranking: Document ids in rank order, best first.
@@ -106,11 +105,8 @@ def precision_at_k(ranking: Sequence[str], judgements: Judgements, k: int) -> fl
         ValueError: If the input is malformed or the query has no relevant document.
     """
     relevant = _relevant_ids(ranking, judgements, k)
-    if not ranking:
-        return 0.0
-    retrieved = ranking[:k]
-    found = sum(1 for doc_id in retrieved if doc_id in relevant)
-    return found / len(retrieved)
+    found = sum(1 for doc_id in ranking[:k] if doc_id in relevant)
+    return found / k
 
 
 def mean_over_queries(scores: Iterable[float]) -> float:

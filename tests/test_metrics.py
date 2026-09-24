@@ -198,10 +198,10 @@ class TestPrecisionAtK:
         # Top 5 is every document retrieved. d2 and d4 are relevant, so 2 / 5.
         assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 5) == pytest.approx(0.4)
 
-    def test_k_beyond_ranking_length_divides_by_what_was_retrieved(self) -> None:
-        # Only five documents were retrieved, so the top 10 is still those same five: 2 / 5, the
-        # denominator is min(k, len(ranking)), not k itself.
-        assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 10) == pytest.approx(0.4)
+    def test_k_beyond_ranking_length_counts_empty_positions_as_misses(self) -> None:
+        # Only five documents were retrieved. Positions 6 to 10 are empty and count as misses,
+        # as in trec_eval, so 2 / 10.
+        assert precision_at_k(BINARY_RANKING, BINARY_JUDGEMENTS, 10) == pytest.approx(0.2)
 
     def test_grade_zero_is_not_relevant(self) -> None:
         # d4 is judged but graded 0. The top 6 holds d1, d2, d3, d5 and d6 as relevant and d4 as
