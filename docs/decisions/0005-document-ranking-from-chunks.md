@@ -1,7 +1,7 @@
 # 0005. Ranking documents from chunk scores
 
-Date: 2026-09-19. Status: accepted as provisional. Revisit once the real corpus is chosen, since
-its judgements may be at passage level rather than document level.
+Date: 2026-09-19. Status: superseded in part by 0011. Passage-level relevance is now the primary
+measure; the best-chunk rule below still ranks pages for the page-level numbers.
 
 ## Context
 

@@ -1,6 +1,8 @@
 # 0003. Experiment configuration format
 
-Date: 2026-09-19. Status: accepted.
+Date: 2026-09-19. Status: accepted; amended 2026-09-24. Validation moved from hand-written
+dataclasses to pydantic models once retrieval sections came to depend on the method, and a
+second kind of config, for stage two, was added. TOML, strictness and the digest are unchanged.
 
 ## Context
 
