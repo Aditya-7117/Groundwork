@@ -1,6 +1,7 @@
 # 0019. The judge: rubrics, effort and cost
 
-Date: 2026-09-24. Status: accepted. Builds on 0008.
+Date: 2026-09-24. Status: accepted for the rubrics, scales and cost guard; the model, effort and
+price are superseded by 0022 (GPT-6 Luna at high effort).
 
 ## Context
 

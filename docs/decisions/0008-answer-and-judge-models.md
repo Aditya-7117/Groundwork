@@ -1,6 +1,7 @@
 # 0008. Answer-writing and judging models
 
-Date: 2026-09-19. Status: accepted. Implemented with the generation and judging stages.
+Date: 2026-09-19. Status: accepted for the writer; the judge model is superseded by 0022
+(GPT-6 Luna), because billing for the Gemini key was blocked when judging was due.
 
 ## Context
 
