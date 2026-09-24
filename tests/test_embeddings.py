@@ -5,7 +5,9 @@ only for exactly the same inputs, resumable after an interruption, and honest ab
 encoding cost.
 """
 
+import time
 from collections.abc import Sequence
+from itertools import chain, repeat
 from pathlib import Path
 
 import numpy as np
@@ -73,14 +75,46 @@ class TestChunkEmbeddings:
         # A cache hit still reports what encoding cost when it happened, never zero.
         assert second_seconds == pytest.approx(first_seconds)
 
-    def test_a_changed_chunk_text_is_encoded_afresh(self, tmp_path: Path) -> None:
+    def test_only_a_changed_chunk_text_is_encoded(self, tmp_path: Path) -> None:
         chunk_embeddings(
             CHUNKS, MINILM, HashingEncoder(MINILM.dimensions), cache_dir=tmp_path, precision="f"
         )
         changed = [*CHUNKS[:-1], chunk(4, "the shortest river")]
         encoder = HashingEncoder(MINILM.dimensions)
         chunk_embeddings(changed, MINILM, encoder, cache_dir=tmp_path, precision="f")
-        assert encoder.calls
+        assert encoder.calls == [["the shortest river"]]
+
+    def test_identical_text_is_encoded_once_and_charged_per_chunk(self, tmp_path: Path) -> None:
+        # Another chunker producing the same text, such as a table chunk, reuses its vector.
+        twice = [chunk(0, "black tea"), chunk(1, "black tea")]
+        encoder = HashingEncoder(MINILM.dimensions)
+        vectors, _ = chunk_embeddings(twice, MINILM, encoder, cache_dir=tmp_path, precision="f")
+        assert encoder.calls == [["black tea"]]
+        np.testing.assert_array_equal(vectors[0], vectors[1])
+
+    def test_the_charge_splits_a_shards_time_across_its_texts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Start, shard start, shard end, log line; then a steady clock for the cache hit.
+        clock = chain([0.0, 100.0, 104.0, 110.0], repeat(200.0))
+        monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
+        _, seconds = chunk_embeddings(
+            CHUNKS[:2],
+            MINILM,
+            HashingEncoder(MINILM.dimensions),
+            cache_dir=tmp_path,
+            precision="f",
+        )
+        # One shard of two texts took 104 - 100 = 4 seconds: 2 seconds per chunk, 4 in all.
+        assert seconds == pytest.approx(4.0)
+        _, reused = chunk_embeddings(
+            [CHUNKS[0]],
+            MINILM,
+            HashingEncoder(MINILM.dimensions),
+            cache_dir=tmp_path,
+            precision="f",
+        )
+        assert reused == pytest.approx(2.0)
 
     def test_a_different_precision_is_encoded_afresh(self, tmp_path: Path) -> None:
         chunk_embeddings(

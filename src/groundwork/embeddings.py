@@ -5,15 +5,18 @@ directions. Retrieval then ranks every chunk by the dot product of its vector wi
 (the vectors are normalised, so this is cosine similarity). The search is exact: every chunk is
 compared, so no approximate index adds its own errors to the comparison (decision 18).
 
-Encoding 341,000 chunks takes hours for the larger model, so chunk vectors are cached on disk in
-shards. An interrupted run resumes from the last finished shard. The cache key covers the model,
-its pinned revision, the numeric precision and the exact chunk texts, so a cached file can never
-be reused for different inputs.
+Encoding the corpus takes hours for the larger model, so vectors are cached on disk, one per
+distinct text (decision 69). Identical text, such as a table chunked the same way by every chunker,
+is encoded once and shared; an ablation that changes only the table chunks re-encodes only those.
+The cache is kept apart per model, pinned revision and numeric precision, and each vector is found
+by a digest of its exact text, so it can never be served for different input. Vectors are written
+in shards as they are encoded, so an interrupted run resumes from the last finished shard.
 """
 
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -28,6 +31,7 @@ from groundwork.chunking import Chunk
 logger = logging.getLogger(__name__)
 
 _SHARD_SIZE = 20_000
+_SHARD_FILE = re.compile(r"shard-(\d{4})\.npy")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -145,6 +149,73 @@ class SentenceTransformerEncoder:
         return np.asarray(vectors, dtype=np.float32)
 
 
+class VectorStore:
+    """One vector per distinct text, for one model at one precision, kept on disk in shards.
+
+    Each shard is three files: shard-NNNN.keys (one text digest per line, in row order),
+    shard-NNNN.seconds (how long the shard took to encode) and shard-NNNN.npy (the vectors).
+    The .npy file is renamed into place last, so a shard without it never existed.
+    """
+
+    def __init__(self, directory: Path, dimensions: int) -> None:
+        """Open a store, reading every finished shard's keys.
+
+        Raises:
+            EmbeddingError: If a finished shard is missing its keys or has the wrong shape.
+        """
+        self._directory = directory
+        self._dimensions = dimensions
+        self._rows: dict[str, tuple[int, int]] = {}
+        self._cost: dict[int, float] = {}
+        directory.mkdir(parents=True, exist_ok=True)
+        for path in sorted(directory.glob("shard-*.npy")):
+            match = _SHARD_FILE.fullmatch(path.name)
+            if match is None:
+                continue
+            shard = int(match.group(1))
+            keys_path = path.with_suffix(".keys")
+            if not keys_path.is_file():
+                raise EmbeddingError(f"{path} has no keys file")
+            keys = keys_path.read_text(encoding="utf-8").split()
+            vectors = np.load(path, mmap_mode="r")
+            if vectors.shape != (len(keys), dimensions):
+                raise EmbeddingError(
+                    f"{path} holds shape {vectors.shape}, expected {(len(keys), dimensions)}"
+                )
+            seconds = float(path.with_suffix(".seconds").read_text(encoding="utf-8"))
+            self._cost[shard] = seconds / len(keys) if keys else 0.0
+            for row, key in enumerate(keys):
+                self._rows[key] = (shard, row)
+
+    def __contains__(self, key: str) -> bool:
+        """Whether the store holds a vector for this text digest."""
+        return key in self._rows
+
+    def add(self, keys: Sequence[str], vectors: NDArray[np.float16], seconds: float) -> None:
+        """Append a shard of vectors and the time they took to encode."""
+        shard = max(self._cost, default=-1) + 1
+        stem = self._directory / f"shard-{shard:04d}"
+        stem.with_suffix(".keys").write_text("\n".join(keys) + "\n", encoding="utf-8")
+        stem.with_suffix(".seconds").write_text(f"{seconds}\n", encoding="utf-8")
+        partial = stem.with_suffix(".partial.npy")
+        np.save(partial, vectors)
+        partial.rename(stem.with_suffix(".npy"))
+        self._cost[shard] = seconds / len(keys)
+        for row, key in enumerate(keys):
+            self._rows[key] = (shard, row)
+
+    def gather(self, keys: Sequence[str]) -> tuple[NDArray[np.float16], float]:
+        """Return the vectors for keys in order, and what they cost when first encoded."""
+        located = np.array([self._rows[key] for key in keys], dtype=np.int64).reshape(-1, 2)
+        out = np.empty((len(keys), self._dimensions), dtype=np.float16)
+        for shard in np.unique(located[:, 0]).tolist():
+            selected = located[:, 0] == shard
+            vectors = np.load(self._directory / f"shard-{shard:04d}.npy", mmap_mode="r")
+            out[selected] = vectors[located[selected, 1]]
+        charged = sum(self._cost[shard] for shard in located[:, 0].tolist())
+        return out, charged
+
+
 def chunk_embeddings(
     chunks: Sequence[Chunk],
     model: EmbeddingModel,
@@ -153,77 +224,62 @@ def chunk_embeddings(
     cache_dir: Path,
     precision: str,
 ) -> tuple[NDArray[np.float16], float]:
-    """Return one vector per chunk, from the cache where possible, and the encoding time.
+    """Return one vector per chunk, encoding only texts the cache lacks, and the encoding cost.
 
-    Vectors are stored in half precision; searching converts them back to float32. The time is
-    the total spent encoding, recorded per shard when it was written, so a run served from the
-    cache still reports what embedding the corpus actually cost.
+    Vectors are stored in half precision; searching converts them back to float32. The cost is
+    what encoding these chunks took when each vector was first computed, charged per chunk, so a
+    run served from the cache, or sharing vectors with another chunker, still reports what
+    embedding this corpus actually costs.
 
     Raises:
-        EmbeddingError: If a cached shard has the wrong shape.
+        EmbeddingError: If a cached shard is damaged or the encoder returns the wrong shape.
     """
-    digest = hashlib.sha256()
+    identity = hashlib.sha256()
     for part in (model.name, model.revision, precision):
-        digest.update(part.encode("utf-8"))
-        digest.update(b"\0")
-    for chunk in chunks:
-        digest.update(chunk.text.encode("utf-8"))
-        digest.update(b"\0")
-    key = digest.hexdigest()[:16]
-    directory = cache_dir / f"{model.key}-{key}"
-    directory.mkdir(parents=True, exist_ok=True)
+        identity.update(part.encode("utf-8"))
+        identity.update(b"\0")
+    directory = cache_dir / f"{model.key}-{identity.hexdigest()[:16]}"
+    store = VectorStore(directory, model.dimensions)
     (directory / "meta.json").write_text(
         json.dumps(
-            {
-                "model": model.name,
-                "revision": model.revision,
-                "precision": precision,
-                "chunks": len(chunks),
-                "shard_size": _SHARD_SIZE,
-            },
-            indent=2,
+            {"model": model.name, "revision": model.revision, "precision": precision}, indent=2
         )
         + "\n",
         encoding="utf-8",
     )
 
-    shards: list[NDArray[np.float16]] = []
-    encode_seconds = 0.0
+    keys = [_text_key(chunk.text) for chunk in chunks]
+    todo: dict[str, str] = {}
+    for key, chunk in zip(keys, chunks, strict=True):
+        if key not in store and key not in todo:
+            todo[key] = chunk.text
+    pending = list(todo.items())
     started = time.perf_counter()
-    for shard, first in enumerate(range(0, len(chunks), _SHARD_SIZE)):
-        texts = [chunk.text for chunk in chunks[first : first + _SHARD_SIZE]]
-        path = directory / f"shard-{shard:04d}.npy"
-        if path.is_file():
-            vectors = np.load(path)
-            if vectors.shape != (len(texts), model.dimensions):
-                raise EmbeddingError(
-                    f"{path} holds shape {vectors.shape}, expected {(len(texts), model.dimensions)}"
-                )
-            timing = path.with_suffix(".seconds")
-            encode_seconds += float(timing.read_text()) if timing.is_file() else 0.0
-        else:
-            shard_started = time.perf_counter()
-            vectors = encoder.encode(texts).astype(np.float16)
-            seconds = time.perf_counter() - shard_started
-            encode_seconds += seconds
-            partial = path.with_suffix(".partial.npy")
-            np.save(partial, vectors)
-            path.with_suffix(".seconds").write_text(f"{seconds}\n", encoding="utf-8")
-            partial.rename(path)
-            done = first + len(texts)
-            elapsed = time.perf_counter() - started
-            logger.info(
-                "embedding shard written",
-                extra={
-                    "model": model.key,
-                    "done": done,
-                    "total": len(chunks),
-                    "minutes_elapsed": round(elapsed / 60, 1),
-                },
+    for first in range(0, len(pending), _SHARD_SIZE):
+        batch = pending[first : first + _SHARD_SIZE]
+        batch_started = time.perf_counter()
+        vectors = encoder.encode([text for _, text in batch]).astype(np.float16)
+        seconds = time.perf_counter() - batch_started
+        if vectors.shape != (len(batch), model.dimensions):
+            raise EmbeddingError(
+                f"encoder returned shape {vectors.shape}, expected {(len(batch), model.dimensions)}"
             )
-        shards.append(vectors)
-    vectors_all = np.concatenate(shards) if shards else np.zeros((0, model.dimensions), np.float16)
-    return vectors_all, encode_seconds
+        store.add([key for key, _ in batch], vectors, seconds)
+        logger.info(
+            "embedding shard written",
+            extra={
+                "model": model.key,
+                "done": first + len(batch),
+                "to_encode": len(pending),
+                "chunks": len(chunks),
+                "minutes_elapsed": round((time.perf_counter() - started) / 60, 1),
+            },
+        )
+    return store.gather(keys)
+
+
+def _text_key(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
 class DenseIndex:
