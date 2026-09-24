@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from fakes import FakeModels
 from groundwork.cli import main
 
 FIXED_NOW = datetime(2026, 9, 20, 3, 4, 5, tzinfo=UTC)
@@ -30,6 +31,8 @@ overlap = 3
 [retrieval]
 method = "bm25"
 depth = 5
+
+[retrieval.bm25]
 k1 = 0.9
 b = 0.4
 stem = true
@@ -191,7 +194,7 @@ class TestEndToEnd:
         assert document["questions"]["evaluated"] == 2
         assert document["corpus"]["source"]["revision"] == "abc123"
         assert document["corpus"]["pages"] == 2
-        assert document["experiment"]["config"]["retrieval"]["stem"] is True
+        assert document["experiment"]["config"]["retrieval"]["bm25"]["stem"] is True
 
     def test_the_run_files_hold_one_line_per_retrieved_item(
         self, tmp_path: Path, data_dir: Path
@@ -221,3 +224,69 @@ class TestEndToEnd:
         )
         assert code == 0
         assert len(list((tmp_path / "results" / "tiny-bm25").iterdir())) == 2
+
+
+class TestSeveralConfigs:
+    DENSE = CONFIG.replace('name = "tiny-bm25"', 'name = "tiny-dense"').replace(
+        """method = "bm25"
+depth = 5
+
+[retrieval.bm25]
+k1 = 0.9
+b = 0.4
+stem = true
+""",
+        """method = "dense"
+depth = 5
+
+[retrieval.dense]
+model = "all-MiniLM-L6-v2"
+""",
+    )
+
+    def test_each_config_gets_its_own_artefact(self, tmp_path: Path, data_dir: Path) -> None:
+        (tmp_path / "bm25.toml").write_text(CONFIG, encoding="utf-8")
+        (tmp_path / "dense.toml").write_text(self.DENSE, encoding="utf-8")
+        code = main(
+            [
+                "--data-dir",
+                str(data_dir),
+                "run",
+                str(tmp_path / "bm25.toml"),
+                str(tmp_path / "dense.toml"),
+                "--results-dir",
+                str(tmp_path / "results"),
+            ],
+            now=lambda: FIXED_NOW,
+            models=FakeModels(tmp_path / "vectors"),
+        )
+        assert code == 0
+        assert sorted(path.name for path in (tmp_path / "results").iterdir()) == [
+            "tiny-bm25",
+            "tiny-dense",
+        ]
+        [dense_run] = (tmp_path / "results" / "tiny-dense").iterdir()
+        document = json.loads((dense_run / "result.json").read_text(encoding="utf-8"))
+        assert document["models"]["embedding"]["name"] == "sentence-transformers/all-MiniLM-L6-v2"
+
+    def test_a_broken_config_stops_the_batch_before_anything_runs(
+        self, tmp_path: Path, data_dir: Path
+    ) -> None:
+        # Every config is checked first, so a typo in the last file cannot waste hours of runs.
+        (tmp_path / "good.toml").write_text(CONFIG, encoding="utf-8")
+        (tmp_path / "bad.toml").write_text(CONFIG.replace("seed = 3", "seed = x"), encoding="utf-8")
+        code = main(
+            [
+                "--data-dir",
+                str(data_dir),
+                "run",
+                str(tmp_path / "good.toml"),
+                str(tmp_path / "bad.toml"),
+                "--results-dir",
+                str(tmp_path / "results"),
+            ],
+            now=lambda: FIXED_NOW,
+            models=FakeModels(tmp_path / "vectors"),
+        )
+        assert code == 1
+        assert not (tmp_path / "results").exists()

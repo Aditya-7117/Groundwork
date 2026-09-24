@@ -17,6 +17,8 @@ overlap = 30
 [retrieval]
 method = "bm25"
 depth = 100
+
+[retrieval.bm25]
 k1 = 0.9
 b = 0.4
 stem = true

@@ -4,10 +4,12 @@ Three pages, three questions, and a chunk size small enough that every expected 
 reasoned about by hand.
 """
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from fakes import FakeModels
 from groundwork.config import ExperimentConfig
 from groundwork.evaluation import EvalQuestion, EvaluationSet
 from groundwork.experiment import run_experiment
@@ -85,7 +87,7 @@ CONFIG_FIELDS: dict[str, Any] = {
     "seed": 3,
     "corpus": {"name": "natural-questions", "split": "validation"},
     "chunking": {"strategy": "fixed_words", "size": 8, "overlap": 2},
-    "retrieval": {"method": "bm25", "depth": 5, "k1": 0.9, "b": 0.4},
+    "retrieval": {"method": "bm25", "depth": 5, "bm25": {"k1": 0.9, "b": 0.4, "stem": False}},
     "evaluation": {"cutoffs": (1, 5)},
 }
 
@@ -93,6 +95,21 @@ CONFIG_FIELDS: dict[str, Any] = {
 def config(**overrides: object) -> ExperimentConfig:
     fields = {**CONFIG_FIELDS, **overrides}
     return ExperimentConfig.model_validate(fields)
+
+
+def bm25(*, stem: bool) -> dict[str, object]:
+    return {"method": "bm25", "depth": 5, "bm25": {"k1": 0.9, "b": 0.4, "stem": stem}}
+
+
+DENSE = {"method": "dense", "depth": 5, "dense": {"model": "all-MiniLM-L6-v2"}}
+HYBRID = {
+    "method": "hybrid",
+    "depth": 5,
+    "bm25": {"k1": 0.9, "b": 0.4, "stem": False},
+    "dense": {"model": "all-MiniLM-L6-v2"},
+    "fusion": {"k": 60, "candidates": 5},
+}
+RERANK = {"model": "bge-reranker-v2-m3", "depth": 5}
 
 
 class TestRun:
@@ -180,7 +197,80 @@ def test_stemming_changes_what_matches() -> None:
         answer_type="paragraph",
     )
     single = EvaluationSet(name="tiny", pages=(TEA, RIVER, PLANET), questions=(asked,), meta={})
-    plain = run_experiment(config(retrieval={**CONFIG_FIELDS["retrieval"], "stem": False}), single)
-    stemmed = run_experiment(config(retrieval={**CONFIG_FIELDS["retrieval"], "stem": True}), single)
+    plain = run_experiment(config(retrieval=bm25(stem=False)), single)
+    stemmed = run_experiment(config(retrieval=bm25(stem=True)), single)
     assert plain.questions[0].page_ranking == ()
     assert stemmed.questions[0].page_ranking[0] == "p-river"
+
+
+class TestNeuralStages:
+    def test_dense_retrieval_finds_each_questions_page(self, tmp_path: Path) -> None:
+        result = run_experiment(
+            config(retrieval=DENSE), EVALUATION_SET, models=FakeModels(tmp_path)
+        )
+        assert result.aggregate["page.recall@5"] == pytest.approx(1.0)
+        assert set(result.stage_seconds) == {"chunking", "embedding", "retrieval", "evaluation"}
+
+    def test_dense_retrieval_returns_the_full_depth(self, tmp_path: Path) -> None:
+        # Cosine similarity ranks every chunk, even one sharing no word with the question.
+        result = run_experiment(
+            config(retrieval=DENSE), EVALUATION_SET, models=FakeModels(tmp_path)
+        )
+        assert all(len(q.chunk_ranking) == 5 for q in result.questions)
+
+    def test_the_embedding_model_is_recorded_with_its_revision(self, tmp_path: Path) -> None:
+        result = run_experiment(
+            config(retrieval=DENSE), EVALUATION_SET, models=FakeModels(tmp_path)
+        )
+        assert result.models["embedding"] == {
+            "name": "sentence-transformers/all-MiniLM-L6-v2",
+            "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            "query_instruction": "",
+            "max_seq_length": 256,
+            "device": "cpu",
+            "precision": "float32",
+        }
+
+    def test_hybrid_uses_both_retrievers_and_records_the_fusion(self, tmp_path: Path) -> None:
+        result = run_experiment(
+            config(retrieval=HYBRID), EVALUATION_SET, models=FakeModels(tmp_path)
+        )
+        assert {"indexing", "embedding"} <= set(result.stage_seconds)
+        assert result.models["fusion"] == {"method": "reciprocal rank fusion", "k": 60}
+        assert result.aggregate["page.recall@5"] == pytest.approx(1.0)
+
+    def test_reranking_reorders_what_the_first_stage_found(self, tmp_path: Path) -> None:
+        # The fake reranker prefers chunks mentioning Jupiter, whatever the question, so after
+        # reranking a dense run every question's top chunk comes from the Jupiter page.
+        models = FakeModels(tmp_path, rerank_word="jupiter")
+        plain = run_experiment(config(retrieval=DENSE), EVALUATION_SET, models=models)
+        reranked = run_experiment(
+            config(retrieval=DENSE, rerank=RERANK), EVALUATION_SET, models=models
+        )
+        assert [q.page_ranking[0] for q in plain.questions] != ["p-planet"] * 3
+        assert [q.page_ranking[0] for q in reranked.questions] == ["p-planet"] * 3
+        assert "reranking" in reranked.stage_seconds
+        assert set(reranked.rerank_latency_ms) == {"mean", "p50", "p95", "max"}
+        assert reranked.models["reranker"] == {
+            "name": "BAAI/bge-reranker-v2-m3",
+            "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+            "max_length": 512,
+            "depth": 5,
+            "device": "cpu",
+            "precision": "float32",
+        }
+
+    def test_a_run_without_neural_stages_records_no_models(self) -> None:
+        result = run_experiment(config(), EVALUATION_SET)
+        assert result.models == {}
+        assert result.rerank_latency_ms == {}
+
+    @pytest.mark.parametrize(
+        ("retrieval", "rerank", "stage"),
+        [(DENSE, None, "dense retrieval"), (bm25(stem=False), RERANK, "reranking")],
+    )
+    def test_neural_stages_need_a_model_provider(
+        self, retrieval: dict[str, object], rerank: dict[str, object] | None, stage: str
+    ) -> None:
+        with pytest.raises(ValueError, match=f"{stage} needs a model provider"):
+            run_experiment(config(retrieval=retrieval, rerank=rerank), EVALUATION_SET)

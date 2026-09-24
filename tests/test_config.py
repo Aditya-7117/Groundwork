@@ -3,11 +3,13 @@ from pathlib import Path
 import pytest
 
 from groundwork.config import (
+    BM25Config,
     ChunkingConfig,
     ConfigError,
     CorpusConfig,
     EvaluationConfig,
     ExperimentConfig,
+    RerankConfig,
     RetrievalConfig,
     config_digest,
     load_config,
@@ -32,8 +34,11 @@ overlap = 50
 [retrieval]
 method = "bm25"
 depth = 100
+
+[retrieval.bm25]
 k1 = 0.9
 b = 0.4
+stem = false
 
 [evaluation]
 cutoffs = [1, 5, 10]
@@ -108,9 +113,36 @@ class TestRejectsInvalidConfig:
 
     def test_bm25_b_must_lie_between_zero_and_one(self, tmp_path: Path) -> None:
         with pytest.raises(
-            ConfigError, match=r"\[retrieval\.b\] Input should be less than or equal to 1"
+            ConfigError, match=r"\[retrieval\.bm25\.b\] Input should be less than or equal to 1"
         ):
             load_config(_write(tmp_path, _replace("b = 0.4", "b = 1.5")))
+
+    def test_stemming_must_be_stated(self, tmp_path: Path) -> None:
+        # Stemming moves recall by several points, so it is never left to a default.
+        with pytest.raises(ConfigError, match=r"\[retrieval\.bm25\.stem\] Field required"):
+            load_config(_write(tmp_path, _replace("stem = false\n", "")))
+
+    def test_dense_without_its_section(self, tmp_path: Path) -> None:
+        text = _replace('method = "bm25"', 'method = "dense"')
+        with pytest.raises(ConfigError, match=r"method dense needs \[retrieval\.dense\]"):
+            load_config(_write(tmp_path, text))
+
+    def test_a_section_the_method_does_not_use(self, tmp_path: Path) -> None:
+        # A bm25 config carrying a [retrieval.dense] section would read as if embeddings ran.
+        text = VALID.replace("[evaluation]", '[retrieval.dense]\nmodel = "x"\n\n[evaluation]')
+        with pytest.raises(ConfigError, match=r"method bm25 does not use \[retrieval\.dense\]"):
+            load_config(_write(tmp_path, text))
+
+    def test_hybrid_needs_every_part(self, tmp_path: Path) -> None:
+        text = _replace('method = "bm25"', 'method = "hybrid"')
+        with pytest.raises(ConfigError, match=r"method hybrid needs \[retrieval\.dense, fusion\]"):
+            load_config(_write(tmp_path, text))
+
+    def test_rerank_deeper_than_retrieval(self, tmp_path: Path) -> None:
+        # A reranker can only re-order what the first stage returned.
+        text = VALID + '\n[rerank]\nmodel = "bge-reranker-v2-m3"\ndepth = 200\n'
+        with pytest.raises(ConfigError, match="rerank depth 200 exceeds retrieval depth 100"):
+            load_config(_write(tmp_path, text))
 
     def test_cutoff_deeper_than_retrieval_depth(self, tmp_path: Path) -> None:
         # Asking for recall@200 from a 100-deep ranking would report a number that could not
@@ -154,13 +186,28 @@ class TestLoadsValidConfig:
             seed=7,
             corpus=CorpusConfig(name="beir-scifact", split="test", query_limit=None),
             chunking=ChunkingConfig(strategy="fixed_words", size=200, overlap=50),
-            retrieval=RetrievalConfig(method="bm25", depth=100, k1=0.9, b=0.4),
+            retrieval=RetrievalConfig(
+                method="bm25", depth=100, bm25=BM25Config(k1=0.9, b=0.4, stem=False)
+            ),
             evaluation=EvaluationConfig(cutoffs=(1, 5, 10)),
         )
 
     def test_integer_is_accepted_where_float_expected(self, tmp_path: Path) -> None:
         config = load_config(_write(tmp_path, _replace("b = 0.4", "b = 1")))
-        assert config.retrieval.b == 1.0
+        assert config.retrieval.bm25 is not None
+        assert config.retrieval.bm25.b == 1.0
+
+    def test_hybrid_with_reranking(self, tmp_path: Path) -> None:
+        text = VALID.replace('method = "bm25"', 'method = "hybrid"').replace(
+            "[evaluation]",
+            '[retrieval.dense]\nmodel = "all-MiniLM-L6-v2"\n\n'
+            "[retrieval.fusion]\nk = 60\ncandidates = 100\n\n"
+            '[rerank]\nmodel = "bge-reranker-v2-m3"\ndepth = 50\n\n[evaluation]',
+        )
+        config = load_config(_write(tmp_path, text))
+        assert config.retrieval.fusion is not None
+        assert config.retrieval.fusion.k == 60
+        assert config.rerank == RerankConfig(model="bge-reranker-v2-m3", depth=50)
 
     def test_optional_query_limit(self, tmp_path: Path) -> None:
         text = _replace('split = "test"', 'split = "test"\nquery_limit = 50')

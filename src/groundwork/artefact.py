@@ -28,11 +28,14 @@ from groundwork.experiment import ExperimentResult
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Version of the result.json layout. Increment it whenever a field changes meaning or moves.
 
 Version 2 reports metrics at passage and page level, adds a breakdown by answer type, and
 describes the corpus as a record of its own rather than a single downloaded archive.
+
+Version 3 moves the BM25 settings into their own section of the config, and records the neural
+models used (name, pinned revision, device, precision) and the reranking latency.
 """
 
 
@@ -180,7 +183,9 @@ def _result_document(record: RunRecord, digest: str) -> dict[str, object]:
             "finished_at": record.finished_at.isoformat(),
             "stage_seconds": dict(result.stage_seconds),
             "retrieval_latency_ms": dict(result.retrieval_latency_ms),
+            "rerank_latency_ms": dict(result.rerank_latency_ms),
         },
+        "models": dict(result.models),
         "metrics": {
             "aggregate": dict(result.aggregate),
             "by_answer_type": {

@@ -66,22 +66,87 @@ class ChunkingConfig(_Section):
         return self
 
 
-class RetrievalConfig(_Section):
-    """How chunks are scored against a question.
+class BM25Config(_Section):
+    """Keyword retrieval settings.
 
     Attributes:
-        method: Retrieval method id.
-        depth: Number of chunks, and of pages, returned per question.
-        k1: BM25 term-frequency saturation.
-        b: BM25 length normalisation, 0 to 1.
+        k1: Term-frequency saturation.
+        b: Length normalisation, 0 to 1.
         stem: Reduce words to their stems, as Anserini's BM25 does.
     """
 
-    method: Literal["bm25"]
-    depth: int = Field(ge=1)
     k1: float = Field(ge=0)
     b: float = Field(ge=0, le=1)
-    stem: bool = False
+    stem: bool
+
+
+class DenseConfig(_Section):
+    """Embedding retrieval settings.
+
+    Attributes:
+        model: Registered embedding model id, for example "Qwen3-Embedding-0.6B".
+    """
+
+    model: str
+
+
+class FusionConfig(_Section):
+    """How hybrid retrieval merges the keyword and embedding rankings.
+
+    Attributes:
+        k: Reciprocal rank fusion constant; each ranking adds 1 / (k + rank).
+        candidates: How deep into each ranking the fusion looks.
+    """
+
+    k: int = Field(ge=1)
+    candidates: int = Field(ge=1)
+
+
+class RetrievalConfig(_Section):
+    """How chunks are found for a question.
+
+    Attributes:
+        method: bm25 (keywords), dense (embeddings) or hybrid (both, fused).
+        depth: Number of chunks, and of pages, returned per question.
+        bm25: Keyword settings, required for bm25 and hybrid.
+        dense: Embedding settings, required for dense and hybrid.
+        fusion: Fusion settings, required for hybrid.
+    """
+
+    method: Literal["bm25", "dense", "hybrid"]
+    depth: int = Field(ge=1)
+    bm25: BM25Config | None = None
+    dense: DenseConfig | None = None
+    fusion: FusionConfig | None = None
+
+    @model_validator(mode="after")
+    def _sections_match_the_method(self) -> Self:
+        needed = {
+            "bm25": {"bm25"},
+            "dense": {"dense"},
+            "hybrid": {"bm25", "dense", "fusion"},
+        }[self.method]
+        present = {name for name in ("bm25", "dense", "fusion") if getattr(self, name) is not None}
+        if missing := needed - present:
+            raise ValueError(f"method {self.method} needs [retrieval.{', '.join(sorted(missing))}]")
+        if extra := present - needed:
+            raise ValueError(
+                f"method {self.method} does not use [retrieval.{', '.join(sorted(extra))}]; "
+                "remove it so the config says exactly what runs"
+            )
+        return self
+
+
+class RerankConfig(_Section):
+    """Second-stage re-ordering of the first-stage results.
+
+    Attributes:
+        model: Registered reranker id, for example "bge-reranker-v2-m3".
+        depth: How many first-stage chunks are re-ordered.
+    """
+
+    model: str
+    depth: int = Field(ge=1)
 
 
 class EvaluationConfig(_Section):
@@ -120,6 +185,7 @@ class ExperimentConfig(_Section):
         corpus: Corpus and question selection.
         chunking: Chunking strategy and parameters.
         retrieval: Retrieval method and parameters.
+        rerank: Optional second-stage reranker.
         evaluation: Metric cutoffs.
     """
 
@@ -129,6 +195,7 @@ class ExperimentConfig(_Section):
     corpus: CorpusConfig
     chunking: ChunkingConfig
     retrieval: RetrievalConfig
+    rerank: RerankConfig | None = None
     evaluation: EvaluationConfig
 
     @model_validator(mode="after")
@@ -144,6 +211,10 @@ class ExperimentConfig(_Section):
             raise ValueError(
                 f"cutoff {deepest} exceeds retrieval depth {self.retrieval.depth}: the metric "
                 "would report a number that could not have been measured"
+            )
+        if self.rerank is not None and self.rerank.depth > self.retrieval.depth:
+            raise ValueError(
+                f"rerank depth {self.rerank.depth} exceeds retrieval depth {self.retrieval.depth}"
             )
         return self
 

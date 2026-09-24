@@ -15,11 +15,24 @@ import random
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Protocol
+
+import numpy as np
+from numpy.typing import NDArray
 
 from groundwork.bm25 import SparseBM25
 from groundwork.chunking import Chunk, ChunkingSettings, chunk_pages
-from groundwork.config import ExperimentConfig, RetrievalConfig
+from groundwork.config import ExperimentConfig
+from groundwork.embeddings import (
+    DenseIndex,
+    EmbeddingModel,
+    Encoder,
+    SentenceTransformerEncoder,
+    chunk_embeddings,
+    get_model,
+)
 from groundwork.evaluation import EvalQuestion, EvaluationSet, chunk_relevance
 from groundwork.metrics import (
     Judgements,
@@ -29,11 +42,13 @@ from groundwork.metrics import (
     recall_at_k,
     reciprocal_rank_at_k,
 )
-from groundwork.retrieval import ChunkTable, rank_from_scores
+from groundwork.rerank import CrossEncoderScorer, RerankerModel, Scorer, get_reranker, rerank
+from groundwork.retrieval import ChunkTable, Retrieval, fuse_reciprocal_rank, rank_from_scores
 
 logger = logging.getLogger(__name__)
 
 type Clock = Callable[[], float]
+type Searcher = Callable[[str], Retrieval]
 
 _METRICS = (
     ("precision", precision_at_k),
@@ -41,6 +56,60 @@ _METRICS = (
     ("ndcg", ndcg_at_k),
     ("rr", reciprocal_rank_at_k),
 )
+
+
+class ModelProvider(Protocol):
+    """Where the neural models come from. Tests pass small fakes; real runs load the weights."""
+
+    @property
+    def cache_dir(self) -> Path:
+        """Where chunk vectors are cached."""
+        ...
+
+    def encoder(self, model: EmbeddingModel) -> Encoder:
+        """Return an encoder for an embedding model."""
+        ...
+
+    def scorer(self, model: RerankerModel) -> Scorer:
+        """Return a scorer for a reranker."""
+        ...
+
+
+class LocalModels:
+    """Real models, loaded on first use and kept for the rest of the process."""
+
+    def __init__(self, *, cache_dir: Path, weights_dir: Path) -> None:
+        """Remember where chunk vectors and model weights are cached."""
+        self._cache_dir = cache_dir
+        self._weights_dir = weights_dir
+        self._encoders: dict[str, Encoder] = {}
+        self._scorers: dict[str, Scorer] = {}
+
+    @property
+    def cache_dir(self) -> Path:
+        """Where chunk vectors are cached."""
+        return self._cache_dir
+
+    def encoder(self, model: EmbeddingModel) -> Encoder:
+        """Load an embedding model once."""
+        if model.key not in self._encoders:
+            self._encoders[model.key] = SentenceTransformerEncoder(
+                model, cache_dir=self._weights_dir
+            )
+        return self._encoders[model.key]
+
+    def scorer(self, model: RerankerModel) -> Scorer:
+        """Load a reranker once."""
+        if model.key not in self._scorers:
+            self._scorers[model.key] = CrossEncoderScorer(model, cache_dir=self._weights_dir)
+        return self._scorers[model.key]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _FirstStage:
+    search: Searcher
+    stage_seconds: dict[str, float]
+    models: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -72,8 +141,11 @@ class ExperimentResult:
         by_answer_type: The same averages within each answer type.
         chunk_count: Chunks indexed.
         excluded_question_ids: Questions left out because no chunk covers their answer.
-        stage_seconds: Wall-clock seconds per pipeline stage.
-        retrieval_latency_ms: Per-question retrieval latency: mean, p50, p95 and max.
+        stage_seconds: Wall-clock seconds per pipeline stage. "embedding" is the time the chunk
+            vectors took to compute, even when this run read them from the cache.
+        retrieval_latency_ms: Per-question first-stage latency: mean, p50, p95 and max.
+        rerank_latency_ms: Per-question reranking latency, empty when there is no reranker.
+        models: The neural models used, their pinned revisions, device and precision.
     """
 
     questions: tuple[QuestionResult, ...]
@@ -83,15 +155,28 @@ class ExperimentResult:
     excluded_question_ids: tuple[str, ...]
     stage_seconds: Mapping[str, float]
     retrieval_latency_ms: Mapping[str, float]
+    rerank_latency_ms: Mapping[str, float] = field(default_factory=dict)
+    models: Mapping[str, object] = field(default_factory=dict)
 
 
 def run_experiment(
-    config: ExperimentConfig, evaluation_set: EvaluationSet, *, clock: Clock = time.perf_counter
+    config: ExperimentConfig,
+    evaluation_set: EvaluationSet,
+    *,
+    clock: Clock = time.perf_counter,
+    models: ModelProvider | None = None,
 ) -> ExperimentResult:
     """Run one configuration over an evaluation set and score it.
 
+    Args:
+        config: The experiment definition.
+        evaluation_set: Pages and questions to score against.
+        clock: Monotonic clock in seconds, used only for timings.
+        models: Where neural models come from; required for dense, hybrid and reranking.
+
     Raises:
-        ValueError: If the config asks for more questions than the set can evaluate.
+        ValueError: If the config asks for more questions than the set can evaluate, or needs
+            models and none were provided.
     """
     stage_seconds: dict[str, float] = {}
     settings = ChunkingSettings(
@@ -108,40 +193,53 @@ def run_experiment(
         chunks_by_page.setdefault(chunk.page_id, []).append(chunk)
     stage_seconds["chunking"] = clock() - started
 
-    started = clock()
-    index = _build_index(chunks, config.retrieval)
     table = ChunkTable(chunks)
-    stage_seconds["indexing"] = clock() - started
+    first_stage = _first_stage(config, chunks, table, models, clock)
+    stage_seconds.update(first_stage.stage_seconds)
+    model_record = first_stage.models
 
     questions, excluded, judgements = _select(config, evaluation_set, chunks_by_page)
 
-    rankings: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    retrievals: dict[str, Retrieval] = {}
     latencies_ms: list[float] = []
-    depth = config.retrieval.depth
     for question in questions:
         started = clock()
-        retrieved = rank_from_scores(
-            table, index.scores(question.text), depth=depth, positive_only=True
-        )
-        chunk_ranking = tuple(item.chunk.chunk_id for item in retrieved.chunks)
-        page_ranking = tuple(page.page_id for page in retrieved.pages)
+        retrievals[question.question_id] = first_stage.search(question.text)
         latencies_ms.append((clock() - started) * 1000)
-        rankings[question.question_id] = (chunk_ranking, page_ranking)
     stage_seconds["retrieval"] = sum(latencies_ms) / 1000
+
+    rerank_ms: list[float] = []
+    if config.rerank is not None:
+        if models is None:
+            raise ValueError("reranking needs a model provider")
+        reranker = get_reranker(config.rerank.model)
+        scorer = models.scorer(reranker)
+        model_record["reranker"] = {
+            "name": reranker.name,
+            "revision": reranker.revision,
+            "max_length": reranker.max_length,
+            "depth": config.rerank.depth,
+            "device": scorer.device,
+            "precision": scorer.precision,
+        }
+        for question in questions:
+            started = clock()
+            retrievals[question.question_id] = rerank(
+                retrievals[question.question_id],
+                question.text,
+                scorer,
+                depth=config.rerank.depth,
+            )
+            rerank_ms.append((clock() - started) * 1000)
+        stage_seconds["reranking"] = sum(rerank_ms) / 1000
 
     started = clock()
     results = tuple(
-        QuestionResult(
-            question_id=question.question_id,
-            answer_type=question.answer_type,
-            chunk_ranking=rankings[question.question_id][0],
-            page_ranking=rankings[question.question_id][1],
-            metrics=_score(
-                rankings[question.question_id],
-                judgements[question.question_id],
-                dict(question.page_relevance),
-                config.evaluation.cutoffs,
-            ),
+        _question_result(
+            question,
+            retrievals[question.question_id],
+            judgements[question.question_id],
+            config.evaluation.cutoffs,
         )
         for question in questions
     )
@@ -169,15 +267,100 @@ def run_experiment(
         excluded_question_ids=excluded,
         stage_seconds=stage_seconds,
         retrieval_latency_ms=_summarise(latencies_ms),
+        rerank_latency_ms=_summarise(rerank_ms) if rerank_ms else {},
+        models=model_record,
     )
 
 
-def _build_index(chunks: Sequence[Chunk], retrieval: RetrievalConfig) -> SparseBM25:
-    # An exhaustive match: adding a retrieval method to the config without handling it here is a
-    # type error, rather than a config that silently runs BM25.
-    match retrieval.method:
-        case "bm25":
-            return SparseBM25(chunks, k1=retrieval.k1, b=retrieval.b, stem=retrieval.stem)
+def _first_stage(
+    config: ExperimentConfig,
+    chunks: Sequence[Chunk],
+    table: ChunkTable,
+    models: ModelProvider | None,
+    clock: Clock,
+) -> _FirstStage:
+    """Build the first-stage searcher the config describes.
+
+    The match over methods is exhaustive, so adding a method without handling it here is a type
+    error rather than a config that silently runs something else.
+
+    Raises:
+        ValueError: If the method needs models and none were provided.
+    """
+    retrieval = config.retrieval
+    stage_seconds: dict[str, float] = {}
+    record: dict[str, object] = {}
+
+    bm25: SparseBM25 | None = None
+    if retrieval.bm25 is not None:
+        started = clock()
+        bm25 = SparseBM25(
+            chunks, k1=retrieval.bm25.k1, b=retrieval.bm25.b, stem=retrieval.bm25.stem
+        )
+        stage_seconds["indexing"] = clock() - started
+
+    dense: DenseIndex | None = None
+    if retrieval.dense is not None:
+        if models is None:
+            raise ValueError("dense retrieval needs a model provider")
+        embedding = get_model(retrieval.dense.model)
+        encoder = models.encoder(embedding)
+        vectors, stage_seconds["embedding"] = chunk_embeddings(
+            chunks, embedding, encoder, cache_dir=models.cache_dir, precision=encoder.precision
+        )
+        dense = DenseIndex(vectors, embedding, encoder)
+        record["embedding"] = {
+            "name": embedding.name,
+            "revision": embedding.revision,
+            "query_instruction": embedding.query_instruction,
+            "max_seq_length": embedding.max_seq_length,
+            "device": encoder.device,
+            "precision": encoder.precision,
+        }
+
+    fusion = retrieval.fusion
+    if fusion is not None:
+        record["fusion"] = {"method": "reciprocal rank fusion", "k": fusion.k}
+
+    def keyword(query: str) -> NDArray[np.float64]:
+        if bm25 is None:
+            raise ValueError("keyword retrieval was not configured")
+        return bm25.scores(query)
+
+    def semantic(query: str) -> NDArray[np.float64]:
+        if dense is None:
+            raise ValueError("dense retrieval was not configured")
+        return dense.scores(query)
+
+    def scores(query: str) -> tuple[NDArray[np.float64], bool]:
+        """Score every chunk, and say whether a zero score means "not retrieved".
+
+        BM25 gives zero to a chunk sharing no word with the question, and such a chunk is not
+        retrieved. A cosine similarity can be zero or negative and still rank, so dense keeps
+        every chunk. Fused scores are positive exactly for chunks some retriever returned.
+        """
+        match retrieval.method:
+            case "bm25":
+                return keyword(query), True
+            case "dense":
+                return semantic(query), False
+            case "hybrid":
+                if fusion is None:
+                    raise ValueError("hybrid retrieval needs [retrieval.fusion]")
+                fused = fuse_reciprocal_rank(
+                    table,
+                    [keyword(query), semantic(query)],
+                    k=fusion.k,
+                    candidates=fusion.candidates,
+                    positive_only=[True, False],
+                )
+                return fused, True
+
+    def search(query: str) -> Retrieval:
+        vector, positive_only = scores(query)
+        return rank_from_scores(table, vector, depth=retrieval.depth, positive_only=positive_only)
+
+    return _FirstStage(search=search, stage_seconds=stage_seconds, models=record)
 
 
 def _select(
@@ -221,22 +404,29 @@ def _select(
     return chosen, tuple(excluded), judgements
 
 
-def _score(
-    rankings: tuple[tuple[str, ...], tuple[str, ...]],
+def _question_result(
+    question: EvalQuestion,
+    retrieval: Retrieval,
     chunk_judgements: Judgements,
-    page_judgements: Judgements,
     cutoffs: Sequence[int],
-) -> dict[str, float]:
-    chunk_ranking, page_ranking = rankings
-    scores: dict[str, float] = {}
+) -> QuestionResult:
+    chunk_ranking = tuple(item.chunk.chunk_id for item in retrieval.chunks)
+    page_ranking = tuple(page.page_id for page in retrieval.pages)
+    metrics: dict[str, float] = {}
     for level, ranking, judgements in (
         ("passage", chunk_ranking, chunk_judgements),
-        ("page", page_ranking, page_judgements),
+        ("page", page_ranking, dict(question.page_relevance)),
     ):
         for name, metric in _METRICS:
             for k in cutoffs:
-                scores[f"{level}.{name}@{k}"] = metric(ranking, judgements, k)
-    return scores
+                metrics[f"{level}.{name}@{k}"] = metric(ranking, judgements, k)
+    return QuestionResult(
+        question_id=question.question_id,
+        answer_type=question.answer_type,
+        chunk_ranking=chunk_ranking,
+        page_ranking=page_ranking,
+        metrics=metrics,
+    )
 
 
 def _average(results: Sequence[QuestionResult]) -> dict[str, float]:

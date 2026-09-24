@@ -25,7 +25,11 @@ CONFIG = ExperimentConfig.model_validate(
         "seed": 3,
         "corpus": {"name": "natural-questions", "split": "validation"},
         "chunking": {"strategy": "fixed_words", "size": 150, "overlap": 30},
-        "retrieval": {"method": "bm25", "depth": 5, "k1": 0.9, "b": 0.4},
+        "retrieval": {
+            "method": "bm25",
+            "depth": 5,
+            "bm25": {"k1": 0.9, "b": 0.4, "stem": False},
+        },
         "evaluation": {"cutoffs": (1,)},
     }
 )
@@ -98,12 +102,12 @@ class TestWrites:
 
     def test_the_result_records_what_produced_the_numbers(self, tmp_path: Path) -> None:
         document = read(write_artefact(RECORD, tmp_path))
-        assert document["schema_version"] == SCHEMA_VERSION == 2
+        assert document["schema_version"] == SCHEMA_VERSION == 3
         assert document["provisional"] is False
         experiment = document["experiment"]
         assert isinstance(experiment, dict)
         assert experiment["config_digest"] == config_digest(CONFIG)
-        assert experiment["config"]["retrieval"]["stem"] is False
+        assert experiment["config"]["retrieval"]["bm25"]["stem"] is False
         assert document["code"] == {
             "groundwork_version": "0.1.0",
             "git_commit": "f" * 40,
