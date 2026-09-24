@@ -1,11 +1,14 @@
 """Reranking re-orders the head of a ranking and leaves the rest alone."""
 
+from collections.abc import Sequence
+
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from fakes import WordCountScorer
 from groundwork.chunking import Chunk
-from groundwork.rerank import RerankError, get_reranker, rerank
+from groundwork.rerank import RerankError, ReusingScorer, get_reranker, rerank
 from groundwork.retrieval import ChunkTable, Retrieval, rank_from_scores
 
 
@@ -74,3 +77,56 @@ class TestRerank:
 def test_an_unknown_reranker_names_the_known_ones() -> None:
     with pytest.raises(RerankError, match="known: bge-reranker-v2-m3"):
         get_reranker("colbert")
+
+
+class Ticking:
+    """A clock that advances one second per scored passage, via the scorer it wraps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TimedScorer(WordCountScorer):
+    def __init__(self, word: str, clock: Ticking) -> None:
+        super().__init__(word)
+        self.clock = clock
+
+    def score(self, question: str, passages: Sequence[str]) -> NDArray[np.float64]:
+        self.clock.now += len(passages)
+        return super().score(question, passages)
+
+
+class TestReusingScorer:
+    def test_each_pair_is_scored_once(self) -> None:
+        inner = WordCountScorer("tea")
+        reusing = ReusingScorer(inner)
+        first = reusing.score("q", ["tea", "tea tea", "river"])
+        second = reusing.score("q", ["tea tea", "gas", "tea"])
+        assert first.tolist() == [1.0, 2.0, 0.0]
+        assert second.tolist() == [2.0, 0.0, 1.0]
+        assert inner.passages_scored == [3, 1]
+
+    def test_the_same_passage_for_another_question_is_scored_again(self) -> None:
+        inner = WordCountScorer("tea")
+        reusing = ReusingScorer(inner)
+        reusing.score("q1", ["tea"])
+        reusing.score("q2", ["tea"])
+        assert inner.passages_scored == [1, 1]
+
+    def test_reused_scores_are_charged_what_they_first_cost(self) -> None:
+        clock = Ticking()
+        reusing = ReusingScorer(TimedScorer("tea", clock), clock=clock)
+        reusing.score("q", ["a", "b", "c", "d"])
+        reusing.score("q", ["a", "b"])
+        # Four passages took four seconds; the two reused ones are charged one second each.
+        assert reusing.fresh_seconds == 4.0
+        assert reusing.charged_seconds == 6.0
+
+    def test_reranking_with_reuse_gives_the_same_order(self) -> None:
+        plain = rerank(FIRST_STAGE, "q", WordCountScorer("tea"), depth=4)
+        reusing = ReusingScorer(WordCountScorer("tea"))
+        rerank(FIRST_STAGE, "q", reusing, depth=4)
+        assert ids(rerank(FIRST_STAGE, "q", reusing, depth=4)) == ids(plain)

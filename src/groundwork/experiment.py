@@ -42,7 +42,14 @@ from groundwork.metrics import (
     recall_at_k,
     reciprocal_rank_at_k,
 )
-from groundwork.rerank import CrossEncoderScorer, RerankerModel, Scorer, get_reranker, rerank
+from groundwork.rerank import (
+    CrossEncoderScorer,
+    RerankerModel,
+    ReusingScorer,
+    Scorer,
+    get_reranker,
+    rerank,
+)
 from groundwork.retrieval import ChunkTable, Retrieval, fuse_reciprocal_rank, rank_from_scores
 
 logger = logging.getLogger(__name__)
@@ -83,7 +90,7 @@ class LocalModels:
         self._cache_dir = cache_dir
         self._weights_dir = weights_dir
         self._encoders: dict[str, Encoder] = {}
-        self._scorers: dict[str, Scorer] = {}
+        self._scorers: dict[str, ReusingScorer] = {}
 
     @property
     def cache_dir(self) -> Path:
@@ -99,9 +106,11 @@ class LocalModels:
         return self._encoders[model.key]
 
     def scorer(self, model: RerankerModel) -> Scorer:
-        """Load a reranker once."""
+        """Load a reranker once, reusing its scores across every run in this process."""
         if model.key not in self._scorers:
-            self._scorers[model.key] = CrossEncoderScorer(model, cache_dir=self._weights_dir)
+            self._scorers[model.key] = ReusingScorer(
+                CrossEncoderScorer(model, cache_dir=self._weights_dir)
+            )
         return self._scorers[model.key]
 
 
@@ -144,7 +153,8 @@ class ExperimentResult:
         stage_seconds: Wall-clock seconds per pipeline stage. "embedding" is the time the chunk
             vectors took to compute, even when this run read them from the cache.
         retrieval_latency_ms: Per-question first-stage latency: mean, p50, p95 and max.
-        rerank_latency_ms: Per-question reranking latency, empty when there is no reranker.
+        rerank_latency_ms: Per-question reranking latency, empty when there is no reranker. A
+            score reused from an earlier setup counts at what it cost when first computed.
         models: The neural models used, their pinned revisions, device and precision.
     """
 
@@ -213,7 +223,8 @@ def run_experiment(
         if models is None:
             raise ValueError("reranking needs a model provider")
         reranker = get_reranker(config.rerank.model)
-        scorer = models.scorer(reranker)
+        provided = models.scorer(reranker)
+        scorer = provided if isinstance(provided, ReusingScorer) else ReusingScorer(provided)
         model_record["reranker"] = {
             "name": reranker.name,
             "revision": reranker.revision,
@@ -223,6 +234,7 @@ def run_experiment(
             "precision": scorer.precision,
         }
         for question in questions:
+            fresh, charged = scorer.fresh_seconds, scorer.charged_seconds
             started = clock()
             retrievals[question.question_id] = rerank(
                 retrievals[question.question_id],
@@ -230,7 +242,10 @@ def run_experiment(
                 scorer,
                 depth=config.rerank.depth,
             )
-            rerank_ms.append((clock() - started) * 1000)
+            # A reused score is charged what it cost when computed, so reuse never flatters
+            # a setup's latency.
+            reused = (scorer.charged_seconds - charged) - (scorer.fresh_seconds - fresh)
+            rerank_ms.append((clock() - started + reused) * 1000)
         stage_seconds["reranking"] = sum(rerank_ms) / 1000
 
     started = clock()

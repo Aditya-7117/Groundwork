@@ -8,7 +8,8 @@ Chunks below that depth keep their first-stage order after the reranked ones.
 """
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -107,6 +108,45 @@ class CrossEncoderScorer:
         pairs = [(question, passage) for passage in passages]
         scores = self._model.predict(pairs, batch_size=self._batch_size, show_progress_bar=False)
         return np.asarray(scores, dtype=np.float64)
+
+
+class ReusingScorer:
+    """Scores each (question, passage) pair once and reuses the score afterwards (decision 64).
+
+    Setups over the same chunker share most of their top 50, so across a grid the same pair would
+    otherwise be scored many times. Reuse must not make a later setup look cheaper than it is, so
+    every returned score is charged the time it took when it was first computed: the time is
+    split evenly across the pairs of the batch that produced it.
+
+    Attributes:
+        fresh_seconds: Time actually spent scoring, in total.
+        charged_seconds: What the returned scores cost when computed, in total. Equal to
+            fresh_seconds when nothing was reused.
+    """
+
+    def __init__(self, scorer: Scorer, *, clock: Callable[[], float] = time.perf_counter) -> None:
+        """Wrap a scorer."""
+        self._scorer = scorer
+        self._clock = clock
+        self._scores: dict[tuple[str, str], tuple[float, float]] = {}
+        self.device = scorer.device
+        self.precision = scorer.precision
+        self.fresh_seconds = 0.0
+        self.charged_seconds = 0.0
+
+    def score(self, question: str, passages: Sequence[str]) -> NDArray[np.float64]:
+        """Return one score per passage, scoring only pairs not seen before."""
+        missing = [p for p in dict.fromkeys(passages) if (question, p) not in self._scores]
+        if missing:
+            started = self._clock()
+            values = self._scorer.score(question, missing)
+            spent = self._clock() - started
+            self.fresh_seconds += spent
+            for passage, value in zip(missing, values, strict=True):
+                self._scores[(question, passage)] = (float(value), spent / len(missing))
+        pairs = [self._scores[(question, passage)] for passage in passages]
+        self.charged_seconds += sum(cost for _, cost in pairs)
+        return np.array([value for value, _ in pairs], dtype=np.float64)
 
 
 def rerank(retrieval: Retrieval, question: str, scorer: Scorer, *, depth: int) -> Retrieval:
