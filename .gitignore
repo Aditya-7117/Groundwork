@@ -2,6 +2,7 @@
 CLAUDE.md
 BRIEF.md
 AGENTS.md
+.agents/
 GEMINI.md
 .claude/
 .cursor/

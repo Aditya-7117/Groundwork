@@ -1,0 +1,25 @@
+# A small, fast sanity corpus: BEIR SciFact, where BM25's published nDCG@10 is 0.665. Judgements
+# are per document, so passage-level and page-level scores are the same here.
+
+name = "scifact-bm25"
+description = "BM25 over BEIR SciFact, kept as a check against a published baseline."
+seed = 1
+
+[corpus]
+name = "beir-scifact"
+split = "test"
+
+[chunking]
+strategy = "fixed_words"
+size = 150
+overlap = 30
+
+[retrieval]
+method = "bm25"
+depth = 100
+k1 = 0.9
+b = 0.4
+stem = true
+
+[evaluation]
+cutoffs = [1, 5, 10, 100]

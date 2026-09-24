@@ -62,32 +62,38 @@ class TestRejectsInvalidConfig:
 
     def test_unknown_key_is_rejected_so_typos_cannot_pass_silently(self, tmp_path: Path) -> None:
         text = _replace("overlap = 50", "overlap = 50\noverlab = 60")
-        with pytest.raises(ConfigError, match=r"\[chunking\] has unknown key: overlab"):
+        with pytest.raises(
+            ConfigError, match=r"\[chunking\.overlab\] Extra inputs are not permitted"
+        ):
             load_config(_write(tmp_path, text))
 
     def test_unknown_section_is_rejected(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match="unknown key: reranking"):
+        with pytest.raises(ConfigError, match=r"\[reranking\] Extra inputs are not permitted"):
             load_config(_write(tmp_path, VALID + "\n[reranking]\nmethod = 'none'\n"))
 
     def test_missing_key(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match=r"\[retrieval\] is missing key: depth"):
+        with pytest.raises(ConfigError, match=r"\[retrieval\.depth\] Field required"):
             load_config(_write(tmp_path, _replace("depth = 100\n", "")))
 
     def test_missing_seed(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match="missing key: seed"):
+        with pytest.raises(ConfigError, match=r"\[seed\] Field required"):
             load_config(_write(tmp_path, _replace("seed = 7\n", "")))
 
     def test_string_where_integer_expected(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match=r"\[chunking\]\.size must be an integer"):
+        with pytest.raises(
+            ConfigError, match=r"\[chunking\.size\] Input should be a valid integer"
+        ):
             load_config(_write(tmp_path, _replace("size = 200", 'size = "200"')))
 
     def test_boolean_is_not_accepted_as_integer(self, tmp_path: Path) -> None:
         # In Python, True is an int. A config that says seed = true is a mistake, not seed 1.
-        with pytest.raises(ConfigError, match="seed must be an integer"):
+        with pytest.raises(ConfigError, match=r"\[seed\] Input should be a valid integer"):
             load_config(_write(tmp_path, _replace("seed = 7", "seed = true")))
 
     def test_float_is_not_accepted_as_integer(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match=r"\[retrieval\]\.depth must be an integer"):
+        with pytest.raises(
+            ConfigError, match=r"\[retrieval\.depth\] Input should be a valid integer"
+        ):
             load_config(_write(tmp_path, _replace("depth = 100", "depth = 100.0")))
 
     def test_overlap_must_be_smaller_than_chunk_size(self, tmp_path: Path) -> None:
@@ -95,11 +101,15 @@ class TestRejectsInvalidConfig:
             load_config(_write(tmp_path, _replace("overlap = 50", "overlap = 200")))
 
     def test_negative_overlap(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match="overlap must be at least 0"):
+        with pytest.raises(
+            ConfigError, match=r"\[chunking\.overlap\] Input should be greater than or equal to 0"
+        ):
             load_config(_write(tmp_path, _replace("overlap = 50", "overlap = -1")))
 
     def test_bm25_b_must_lie_between_zero_and_one(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match=r"b must be between 0 and 1"):
+        with pytest.raises(
+            ConfigError, match=r"\[retrieval\.b\] Input should be less than or equal to 1"
+        ):
             load_config(_write(tmp_path, _replace("b = 0.4", "b = 1.5")))
 
     def test_cutoff_deeper_than_retrieval_depth(self, tmp_path: Path) -> None:
@@ -116,7 +126,9 @@ class TestRejectsInvalidConfig:
 
     def test_unsupported_chunking_strategy(self, tmp_path: Path) -> None:
         text = _replace('strategy = "fixed_words"', 'strategy = "semantic"')
-        with pytest.raises(ConfigError, match="strategy must be one of: fixed_words"):
+        with pytest.raises(
+            ConfigError, match=r"\[chunking\.strategy\] Input should be 'fixed_words'"
+        ):
             load_config(_write(tmp_path, text))
 
     @pytest.mark.parametrize("name", ["../escape", "Upper", "has space", "double--hyphen"])
@@ -128,7 +140,9 @@ class TestRejectsInvalidConfig:
 
     def test_query_limit_must_be_positive(self, tmp_path: Path) -> None:
         text = _replace('split = "test"', 'split = "test"\nquery_limit = 0')
-        with pytest.raises(ConfigError, match="query_limit must be at least 1"):
+        with pytest.raises(
+            ConfigError, match=r"\[corpus\.query_limit\] Input should be greater than or equal to 1"
+        ):
             load_config(_write(tmp_path, text))
 
 

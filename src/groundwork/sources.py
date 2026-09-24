@@ -79,7 +79,9 @@ def get_source(name: str) -> CorpusSource:
         raise SourceError(f"unknown corpus {name!r}; known: {known}") from error
 
 
-def fetch(source: CorpusSource, data_dir: Path, *, download: Downloader | None = None) -> Path:
+def fetch_archive(
+    source: CorpusSource, data_dir: Path, *, download: Downloader | None = None
+) -> Path:
     """Return the directory holding the corpus files, downloading and verifying them if needed.
 
     The archive is downloaded and extracted inside a temporary directory next to the cache, and

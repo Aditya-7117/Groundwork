@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from groundwork.corpus import load_beir
-from groundwork.sources import SOURCES, CorpusSource, SourceError, download_https, fetch, get_source
+from groundwork.sources import (
+    SOURCES,
+    CorpusSource,
+    SourceError,
+    download_https,
+    fetch_archive,
+    get_source,
+)
 
 
 class FakeDownloader:
@@ -41,7 +48,7 @@ class TestRejects:
         data_dir = tmp_path / "data"
         source = _source("0" * 64)
         with pytest.raises(SourceError, match="SHA-256 mismatch"):
-            fetch(source, data_dir, download=FakeDownloader(tiny_beir_archive[0]))
+            fetch_archive(source, data_dir, download=FakeDownloader(tiny_beir_archive[0]))
         assert not (data_dir / source.name).exists()
         assert list(data_dir.iterdir()) == []
 
@@ -54,7 +61,7 @@ class TestFetch:
     def test_fetches_verifies_and_extracts(
         self, tmp_path: Path, tiny_beir_archive: tuple[Path, str]
     ) -> None:
-        corpus_dir = fetch(
+        corpus_dir = fetch_archive(
             _source(tiny_beir_archive[1]),
             tmp_path / "data",
             download=FakeDownloader(tiny_beir_archive[0]),
@@ -65,8 +72,10 @@ class TestFetch:
         self, tmp_path: Path, tiny_beir_archive: tuple[Path, str]
     ) -> None:
         downloader = FakeDownloader(tiny_beir_archive[0])
-        first = fetch(_source(tiny_beir_archive[1]), tmp_path / "data", download=downloader)
-        second = fetch(_source(tiny_beir_archive[1]), tmp_path / "data", download=downloader)
+        first = fetch_archive(_source(tiny_beir_archive[1]), tmp_path / "data", download=downloader)
+        second = fetch_archive(
+            _source(tiny_beir_archive[1]), tmp_path / "data", download=downloader
+        )
         assert first == second
         assert downloader.calls == 1
 
@@ -78,7 +87,9 @@ class TestFetch:
         leftover.mkdir(parents=True)
         (leftover / "corpus.jsonl").write_text("partial", encoding="utf-8")
         downloader = FakeDownloader(tiny_beir_archive[0])
-        corpus_dir = fetch(_source(tiny_beir_archive[1]), tmp_path / "data", download=downloader)
+        corpus_dir = fetch_archive(
+            _source(tiny_beir_archive[1]), tmp_path / "data", download=downloader
+        )
         assert downloader.calls == 1
         assert len(load_beir(corpus_dir, split="test").documents) == 6
 

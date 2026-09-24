@@ -1,9 +1,12 @@
-"""Running one experiment: chunk, index, retrieve, and score every evaluable query.
+"""Running one experiment: chunk, index, retrieve, and score every question.
 
-The run is a pure function of the config and the corpus. The only randomness is the optional
-query sample, which draws from a random.Random seeded by the config, so the same inputs always
-give the same rankings and metrics. Wall-clock timings are the one part of a result that varies
-between runs.
+Everything except wall-clock timing is a pure function of the config and the evaluation set. The
+only randomness is the optional question sample, drawn from a random.Random seeded by the config,
+so the same inputs always give the same rankings and metrics.
+
+Every metric is reported twice: once at passage level, where a chunk counts when it overlaps the
+annotated answer span, and once at page level. Results are also broken down by answer type, so
+paragraph, table and list questions can be compared.
 """
 
 import logging
@@ -15,29 +18,47 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from groundwork.bm25 import BM25Index
-from groundwork.chunking import Chunk, chunk_documents
+from groundwork.chunking import Chunk, ChunkingSettings, chunk_pages
 from groundwork.config import ExperimentConfig, RetrievalConfig
-from groundwork.corpus import Corpus
-from groundwork.metrics import mean_over_queries, ndcg_at_k, recall_at_k, reciprocal_rank_at_k
-from groundwork.ranking import RankedDocument, rank_documents_by_best_chunk
+from groundwork.evaluation import EvalQuestion, EvaluationSet, chunk_relevance
+from groundwork.metrics import (
+    Judgements,
+    mean_over_queries,
+    ndcg_at_k,
+    precision_at_k,
+    recall_at_k,
+    reciprocal_rank_at_k,
+)
+from groundwork.ranking import rank_pages_by_best_chunk
 
 logger = logging.getLogger(__name__)
 
 type Clock = Callable[[], float]
 
+_METRICS = (
+    ("precision", precision_at_k),
+    ("recall", recall_at_k),
+    ("ndcg", ndcg_at_k),
+    ("rr", reciprocal_rank_at_k),
+)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class QueryResult:
-    """One query's ranking and its metrics.
+class QuestionResult:
+    """One question's rankings and metrics.
 
     Attributes:
-        query_id: The query.
-        ranking: Retrieved documents, best first, at most the configured depth.
-        metrics: recall@k, ndcg@k and rr@k (reciprocal rank) for each configured cutoff.
+        question_id: The question.
+        answer_type: Whether its answer sits in a paragraph, a table or a list.
+        chunk_ranking: Retrieved chunk ids, best first.
+        page_ranking: Retrieved page ids, best first, each scored by its best chunk.
+        metrics: Metric name to value, prefixed "passage." or "page.".
     """
 
-    query_id: str
-    ranking: tuple[RankedDocument, ...]
+    question_id: str
+    answer_type: str
+    chunk_ranking: tuple[str, ...]
+    page_ranking: tuple[str, ...]
     metrics: Mapping[str, float]
 
 
@@ -46,86 +67,103 @@ class ExperimentResult:
     """Everything a run measured.
 
     Attributes:
-        queries: Per-query results, ordered by query id.
-        aggregate: Each metric averaged over queries. Mean reciprocal rank is reported as mrr@k.
-        excluded_query_ids: Judged queries with no document graded above zero. The metrics are
-            undefined for them, so they are left out and listed here instead.
-        chunk_count: Number of chunks indexed.
-        stage_seconds: Wall-clock seconds spent in each pipeline stage.
-        retrieval_latency_ms: Per-query retrieval latency summary: mean, p50, p95 and max.
+        questions: Per-question results, ordered by question id.
+        aggregate: Each metric averaged over questions, with rr reported as mrr.
+        by_answer_type: The same averages within each answer type.
+        chunk_count: Chunks indexed.
+        excluded_question_ids: Questions left out because no chunk covers their answer.
+        stage_seconds: Wall-clock seconds per pipeline stage.
+        retrieval_latency_ms: Per-question retrieval latency: mean, p50, p95 and max.
     """
 
-    queries: tuple[QueryResult, ...]
+    questions: tuple[QuestionResult, ...]
     aggregate: Mapping[str, float]
-    excluded_query_ids: tuple[str, ...]
+    by_answer_type: Mapping[str, Mapping[str, float]]
     chunk_count: int
+    excluded_question_ids: tuple[str, ...]
     stage_seconds: Mapping[str, float]
     retrieval_latency_ms: Mapping[str, float]
 
 
 def run_experiment(
-    config: ExperimentConfig, corpus: Corpus, *, clock: Clock = time.perf_counter
+    config: ExperimentConfig, evaluation_set: EvaluationSet, *, clock: Clock = time.perf_counter
 ) -> ExperimentResult:
-    """Run one configuration over a corpus and score it.
-
-    Args:
-        config: The experiment definition.
-        corpus: Documents, queries and judgements to evaluate against.
-        clock: Monotonic clock in seconds, used only for timings.
+    """Run one configuration over an evaluation set and score it.
 
     Raises:
-        ValueError: If the config asks for more queries than the corpus can evaluate.
+        ValueError: If the config asks for more questions than the set can evaluate.
     """
-    query_ids, excluded = _select_queries(config, corpus)
     stage_seconds: dict[str, float] = {}
+    settings = ChunkingSettings(
+        strategy=config.chunking.strategy,
+        size=config.chunking.size,
+        overlap=config.chunking.overlap,
+        flatten_tables=config.chunking.flatten_tables,
+    )
 
     started = clock()
-    chunks = chunk_documents(corpus.documents.values(), config.chunking)
+    chunks = chunk_pages(evaluation_set.pages, settings)
+    chunks_by_page: dict[str, list[Chunk]] = {}
+    for chunk in chunks:
+        chunks_by_page.setdefault(chunk.page_id, []).append(chunk)
     stage_seconds["chunking"] = clock() - started
 
     started = clock()
     index = _build_index(chunks, config.retrieval)
     stage_seconds["indexing"] = clock() - started
 
-    rankings: dict[str, tuple[RankedDocument, ...]] = {}
+    questions, excluded, judgements = _select(config, evaluation_set, chunks_by_page)
+
+    rankings: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
     latencies_ms: list[float] = []
-    for query_id in query_ids:
+    depth = config.retrieval.depth
+    for question in questions:
         started = clock()
-        ranked = rank_documents_by_best_chunk(
-            index.search(corpus.queries[query_id].text), depth=config.retrieval.depth
-        )
+        scored = index.search(question.text)
+        chunk_ranking = tuple(item.chunk.chunk_id for item in scored[:depth])
+        page_ranking = tuple(page.page_id for page in rank_pages_by_best_chunk(scored, depth=depth))
         latencies_ms.append((clock() - started) * 1000)
-        rankings[query_id] = tuple(ranked)
+        rankings[question.question_id] = (chunk_ranking, page_ranking)
     stage_seconds["retrieval"] = sum(latencies_ms) / 1000
 
     started = clock()
-    queries = tuple(
-        QueryResult(
-            query_id=query_id,
-            ranking=rankings[query_id],
-            metrics=_score_query(
-                [ranked.doc_id for ranked in rankings[query_id]],
-                corpus.judgements[query_id],
+    results = tuple(
+        QuestionResult(
+            question_id=question.question_id,
+            answer_type=question.answer_type,
+            chunk_ranking=rankings[question.question_id][0],
+            page_ranking=rankings[question.question_id][1],
+            metrics=_score(
+                rankings[question.question_id],
+                judgements[question.question_id],
+                dict(question.page_relevance),
                 config.evaluation.cutoffs,
             ),
         )
-        for query_id in query_ids
+        for question in questions
     )
-    aggregate = {
-        name.replace("rr@", "mrr@"): mean_over_queries(query.metrics[name] for query in queries)
-        for name in queries[0].metrics
+    aggregate = _average(results)
+    by_answer_type = {
+        answer_type: _average(tuple(r for r in results if r.answer_type == answer_type))
+        for answer_type in sorted({result.answer_type for result in results})
     }
     stage_seconds["evaluation"] = clock() - started
 
     logger.info(
         "experiment finished",
-        extra={"experiment": config.name, "queries": len(queries), "chunks": len(chunks)},
+        extra={
+            "experiment": config.name,
+            "questions": len(results),
+            "chunks": len(chunks),
+            "excluded": len(excluded),
+        },
     )
     return ExperimentResult(
-        queries=queries,
+        questions=results,
         aggregate=aggregate,
-        excluded_query_ids=excluded,
+        by_answer_type=by_answer_type,
         chunk_count=len(chunks),
+        excluded_question_ids=excluded,
         stage_seconds=stage_seconds,
         retrieval_latency_ms=_summarise(latencies_ms),
     )
@@ -136,54 +174,82 @@ def _build_index(chunks: Sequence[Chunk], retrieval: RetrievalConfig) -> BM25Ind
     # type error, rather than a config that silently runs BM25.
     match retrieval.method:
         case "bm25":
-            return BM25Index(chunks, k1=retrieval.k1, b=retrieval.b)
+            return BM25Index(chunks, k1=retrieval.k1, b=retrieval.b, stem=retrieval.stem)
 
 
-def _select_queries(config: ExperimentConfig, corpus: Corpus) -> tuple[list[str], tuple[str, ...]]:
-    """Return the query ids to evaluate, and the judged ids excluded for having no relevant doc."""
-    evaluable = sorted(
-        query_id
-        for query_id, judgements in corpus.judgements.items()
-        if any(grade > 0 for grade in judgements.values())
-    )
-    excluded = tuple(sorted(set(corpus.judgements) - set(evaluable)))
+def _select(
+    config: ExperimentConfig,
+    evaluation_set: EvaluationSet,
+    chunks_by_page: Mapping[str, Sequence[Chunk]],
+) -> tuple[tuple[EvalQuestion, ...], tuple[str, ...], dict[str, Judgements]]:
+    """Choose the questions to evaluate, and work out which chunks answer each one.
+
+    Raises:
+        ValueError: If the sample asks for more questions than are evaluable.
+    """
+    evaluable: list[EvalQuestion] = []
+    excluded: list[str] = []
+    judgements: dict[str, Judgements] = {}
+    for question in sorted(evaluation_set.questions, key=lambda item: item.question_id):
+        relevance = chunk_relevance(question, chunks_by_page)
+        if relevance and any(grade > 0 for grade in question.page_relevance.values()):
+            evaluable.append(question)
+            judgements[question.question_id] = relevance
+        else:
+            excluded.append(question.question_id)
     if excluded:
         logger.warning(
-            "queries excluded: no document graded above zero",
-            extra={"count": len(excluded), "query_ids": list(excluded)},
+            "questions excluded: no chunk covers the answer",
+            extra={"count": len(excluded)},
         )
     if not evaluable:
-        raise ValueError("the corpus has no query with a relevant document to evaluate")
+        raise ValueError("the evaluation set has no question whose answer any chunk covers")
 
     limit = config.corpus.query_limit
     if limit is None:
-        return evaluable, excluded
+        return tuple(evaluable), tuple(excluded), judgements
     if limit > len(evaluable):
         raise ValueError(
-            f"query_limit {limit} exceeds the {len(evaluable)} evaluable queries in the corpus"
+            f"query_limit {limit} exceeds the {len(evaluable)} evaluable questions in the corpus"
         )
     # A seeded, reproducible sample is the point here; S311 concerns cryptographic randomness.
     sample = random.Random(config.seed).sample(evaluable, limit)  # noqa: S311
-    return sorted(sample), excluded
+    chosen = tuple(sorted(sample, key=lambda item: item.question_id))
+    return chosen, tuple(excluded), judgements
 
 
-def _score_query(
-    ranking: Sequence[str], judgements: Mapping[str, int], cutoffs: Sequence[int]
+def _score(
+    rankings: tuple[tuple[str, ...], tuple[str, ...]],
+    chunk_judgements: Judgements,
+    page_judgements: Judgements,
+    cutoffs: Sequence[int],
 ) -> dict[str, float]:
-    metrics: dict[str, float] = {}
-    for name, metric in (
-        ("recall", recall_at_k),
-        ("ndcg", ndcg_at_k),
-        ("rr", reciprocal_rank_at_k),
+    chunk_ranking, page_ranking = rankings
+    scores: dict[str, float] = {}
+    for level, ranking, judgements in (
+        ("passage", chunk_ranking, chunk_judgements),
+        ("page", page_ranking, page_judgements),
     ):
-        for k in cutoffs:
-            metrics[f"{name}@{k}"] = metric(ranking, judgements, k)
-    return metrics
+        for name, metric in _METRICS:
+            for k in cutoffs:
+                scores[f"{level}.{name}@{k}"] = metric(ranking, judgements, k)
+    return scores
+
+
+def _average(results: Sequence[QuestionResult]) -> dict[str, float]:
+    if not results:
+        return {}
+    return {
+        name.replace(".rr@", ".mrr@"): mean_over_queries(result.metrics[name] for result in results)
+        for name in results[0].metrics
+    }
 
 
 def _summarise(latencies_ms: Sequence[float]) -> dict[str, float]:
     ordered = sorted(latencies_ms)
-    # Nearest-rank percentile: defined for any sample size, including a single query.
+    if not ordered:
+        return {"mean": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+    # Nearest-rank percentile: defined for any sample size, including a single question.
     p95 = ordered[math.ceil(0.95 * len(ordered)) - 1]
     return {
         "mean": statistics.fmean(ordered),

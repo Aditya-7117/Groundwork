@@ -29,7 +29,9 @@ TOLERANCE = 1e-6
 
 
 def _chunk(chunk_id: str, text: str) -> Chunk:
-    return Chunk(chunk_id=chunk_id, doc_id=chunk_id, start=0, end=len(text), text=text)
+    return Chunk(
+        chunk_id=chunk_id, page_id=chunk_id, text=text, start=0, end=len(text), kind="prose"
+    )
 
 
 CHUNKS = [_chunk("c0", "tea tea leaves"), _chunk("c1", "black tea"), _chunk("c2", "river water")]
@@ -63,6 +65,12 @@ class TestRejectsInvalidIndex:
 class TestTokenize:
     def test_lowercases_and_splits_on_non_word_characters(self) -> None:
         assert tokenize("Green-tea, BITTER; 2 cups!") == ["green", "tea", "bitter", "2", "cups"]
+
+    def test_stem_defaults_to_off(self) -> None:
+        assert tokenize("rings") == ["rings"]
+
+    def test_stem_true_reduces_inflected_forms_to_a_common_root(self) -> None:
+        assert tokenize("rings", stem=True) == tokenize("ring", stem=True) == ["ring"]
 
 
 class TestScores:
@@ -100,3 +108,22 @@ class TestScores:
     @pytest.mark.parametrize("query", ["coffee", "", "?!"])
     def test_query_with_no_indexed_term_returns_nothing(self, query: str) -> None:
         assert BM25Index(CHUNKS, k1=1.2, b=0.75).search(query) == []
+
+
+class TestStemming:
+    def test_query_variant_matches_indexed_root_only_when_stemming_is_on(self) -> None:
+        # The chunk holds "ring" and the query holds "rings". A match here proves the query is
+        # stemmed too, not only the index: if only the index were stemmed, "rings" would remain
+        # its own term on the query side and this would still miss.
+        index = BM25Index([_chunk("c0", "the one ring")], k1=1.2, b=0.75, stem=True)
+        assert [scored.chunk.chunk_id for scored in index.search("rings")] == ["c0"]
+
+    def test_query_variant_does_not_match_without_stemming(self) -> None:
+        index = BM25Index([_chunk("c0", "the one ring")], k1=1.2, b=0.75, stem=False)
+        assert index.search("rings") == []
+
+    def test_indexed_variant_matches_query_root_when_stemming_is_on(self) -> None:
+        # Reversed: the chunk holds the inflected form and the query holds the root, so a match
+        # here proves the indexed chunks are stemmed as well as the query.
+        index = BM25Index([_chunk("c0", "many rings were forged")], k1=1.2, b=0.75, stem=True)
+        assert [scored.chunk.chunk_id for scored in index.search("ring")] == ["c0"]

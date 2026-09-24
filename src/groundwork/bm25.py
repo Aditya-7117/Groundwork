@@ -12,8 +12,8 @@ and lengths are counted in tokens. This IDF never goes negative, unlike the orig
 form. A term repeated in the query contributes once per repetition.
 
 Tokenisation is deliberately plain: lowercase, then split on anything that is not a letter, digit
-or underscore. There is no stemming and no stopword list, so "ring" and "rings" are different
-terms.
+or underscore. There is no stopword list. Stemming is optional and off by default; when it is on,
+each token is reduced with NLTK's Porter stemmer, so "ring" and "rings" become the same term.
 """
 
 import math
@@ -22,14 +22,37 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from nltk.stem import PorterStemmer
+
 from groundwork.chunking import Chunk
 
 _TOKEN = re.compile(r"\w+")
+_STEMMER = PorterStemmer()
+_STEM_CACHE: dict[str, str] = {}
 
 
-def tokenize(text: str) -> list[str]:
-    """Lowercase text and split it into word tokens."""
-    return _TOKEN.findall(text.lower())
+def _stem(word: str) -> str:
+    """Return word's Porter stem, from a module-level cache since words repeat constantly."""
+    cached = _STEM_CACHE.get(word)
+    if cached is None:
+        cached = _STEMMER.stem(word)
+        _STEM_CACHE[word] = cached
+    return cached
+
+
+def tokenize(text: str, *, stem: bool = False) -> list[str]:
+    """Lowercase text and split it into word tokens.
+
+    Args:
+        text: The text to tokenise.
+        stem: Whether to reduce each token to its Porter stem, so that inflected forms like
+            "rings" collapse onto their root, "ring".
+
+    Returns:
+        The tokens, lowercased and in order.
+    """
+    words = _TOKEN.findall(text.lower())
+    return [_stem(word) for word in words] if stem else words
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -43,13 +66,15 @@ class ScoredChunk:
 class BM25Index:
     """An in-memory inverted index that scores chunks against a query with BM25."""
 
-    def __init__(self, chunks: Sequence[Chunk], *, k1: float, b: float) -> None:
+    def __init__(self, chunks: Sequence[Chunk], *, k1: float, b: float, stem: bool = False) -> None:
         """Index chunks for BM25 scoring.
 
         Args:
             chunks: The chunks to index.
             k1: Term-frequency saturation, at least 0.
             b: Length normalisation, from 0 to 1.
+            stem: Whether to reduce tokens to their Porter stem before indexing. Queries are
+                stemmed the same way by search, so this must match how the chunks were written.
 
         Raises:
             ValueError: If a parameter is out of range or the chunks contain no tokens.
@@ -61,10 +86,11 @@ class BM25Index:
 
         self._chunks = list(chunks)
         self._k1 = k1
+        self._stem = stem
         self._postings: dict[str, list[tuple[int, int]]] = {}
         lengths: list[int] = []
         for position, chunk in enumerate(self._chunks):
-            counts = Counter(tokenize(chunk.text))
+            counts = Counter(tokenize(chunk.text, stem=stem))
             lengths.append(counts.total())
             for term, frequency in counts.items():
                 self._postings.setdefault(term, []).append((position, frequency))
@@ -87,7 +113,7 @@ class BM25Index:
         order.
         """
         scores: dict[int, float] = {}
-        for term in tokenize(query):
+        for term in tokenize(query, stem=self._stem):
             if term not in self._postings:
                 continue
             idf = self._idf[term]

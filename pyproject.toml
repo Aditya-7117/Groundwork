@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Aditya Magar" }]
 dependencies = [
+    "nltk>=3.10.3",
     "pyarrow>=25.0.1",
+    "pydantic>=2.13.5",
 ]
 
 [project.scripts]
@@ -91,6 +93,11 @@ warn_unreachable = true
 # pyarrow ships no type information, so its imports cannot be checked. Everything read through it
 # is converted to typed records in natural_questions.py before it reaches the rest of the code.
 module = ["pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# nltk ships no py.typed marker either, so its imports cannot be checked.
+module = ["nltk.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

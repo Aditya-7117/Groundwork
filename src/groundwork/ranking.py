@@ -1,8 +1,8 @@
-"""Turning a ranking of chunks into a ranking of documents.
+"""Turning a ranking of chunks into a ranking of pages.
 
-Relevance judgements are made per document, but retrieval scores chunks. Each document is scored
-by its best chunk, an approach known as MaxP in the passage-retrieval literature. The reasoning
-is in docs/decisions/0005-document-ranking-from-chunks.md.
+Relevance judgements are made per page, but retrieval scores chunks. Each page is scored by its
+best chunk, an approach known as MaxP in the passage-retrieval literature. The reasoning is in
+docs/decisions/0005-document-ranking-from-chunks.md.
 """
 
 from collections.abc import Iterable
@@ -12,21 +12,21 @@ from groundwork.bm25 import ScoredChunk
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class RankedDocument:
-    """A document's position-determining score, and the chunk that earned it."""
+class RankedPage:
+    """A page's position-determining score, and the chunk that earned it."""
 
-    doc_id: str
+    page_id: str
     score: float
     best_chunk_id: str
 
 
-def rank_documents_by_best_chunk(
+def rank_pages_by_best_chunk(
     scored_chunks: Iterable[ScoredChunk], *, depth: int
-) -> list[RankedDocument]:
-    """Rank documents by their highest-scoring chunk and keep the top `depth`.
+) -> list[RankedPage]:
+    """Rank pages by their highest-scoring chunk and keep the top `depth`.
 
-    Ties between documents are broken by document id, and ties between chunks of one document by
-    chunk id, so the result is fully deterministic.
+    Ties between pages are broken by page id, and ties between chunks of one page by chunk id, so
+    the result is fully deterministic.
 
     Raises:
         ValueError: If depth is below 1.
@@ -35,17 +35,17 @@ def rank_documents_by_best_chunk(
         raise ValueError(f"depth must be at least 1, got {depth}")
     best: dict[str, ScoredChunk] = {}
     for scored in scored_chunks:
-        current = best.get(scored.chunk.doc_id)
+        current = best.get(scored.chunk.page_id)
         if (
             current is None
             or scored.score > current.score
             or (scored.score == current.score and scored.chunk.chunk_id < current.chunk.chunk_id)
         ):
-            best[scored.chunk.doc_id] = scored
-    ranked = sorted(best.values(), key=lambda scored: (-scored.score, scored.chunk.doc_id))
+            best[scored.chunk.page_id] = scored
+    ranked = sorted(best.values(), key=lambda scored: (-scored.score, scored.chunk.page_id))
     return [
-        RankedDocument(
-            doc_id=scored.chunk.doc_id, score=scored.score, best_chunk_id=scored.chunk.chunk_id
+        RankedPage(
+            page_id=scored.chunk.page_id, score=scored.score, best_chunk_id=scored.chunk.chunk_id
         )
         for scored in ranked[:depth]
     ]

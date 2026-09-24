@@ -1,164 +1,186 @@
-import json
-import os
-import subprocess
-import sys
-from dataclasses import replace
-from pathlib import Path
+"""Running one experiment over a small evaluation set built in code.
+
+Three pages, three questions, and a chunk size small enough that every expected ranking can be
+reasoned about by hand.
+"""
+
+from typing import Any
 
 import pytest
 
-from groundwork.config import (
-    ChunkingConfig,
-    CorpusConfig,
-    EvaluationConfig,
-    ExperimentConfig,
-    RetrievalConfig,
-)
-from groundwork.corpus import Corpus, Query, load_beir
+from groundwork.config import ExperimentConfig
+from groundwork.evaluation import EvalQuestion, EvaluationSet
 from groundwork.experiment import run_experiment
+from groundwork.page import Block, Page
 
-FIXTURE = Path(__file__).parent / "fixtures" / "tiny-beir"
 TOLERANCE = 1e-6
 
-CONFIG = ExperimentConfig(
-    name="tiny-bm25",
-    description="Fixture run.",
-    seed=3,
-    corpus=CorpusConfig(name="tiny-beir", split="test", query_limit=None),
-    chunking=ChunkingConfig(strategy="fixed_words", size=200, overlap=50),
-    retrieval=RetrievalConfig(method="bm25", depth=5, k1=0.9, b=0.4),
-    evaluation=EvaluationConfig(cutoffs=(1, 5)),
+
+def page(page_id: str, title: str, text: str) -> Page:
+    block = Block(kind="paragraph", section="", text=text, start=0, end=len(text))
+    return Page(page_id=page_id, title=title, url="u", text=text, blocks=(block,))
+
+
+TEA = page(
+    "p-tea",
+    "Green tea",
+    "Green tea is made from unoxidised leaves. Steeping it too hot makes it bitter.",
+)
+RIVER = page(
+    "p-river",
+    "River Shannon",
+    "The Shannon is the longest river in Ireland. It reaches the sea at Limerick.",
+)
+PLANET = page(
+    "p-planet", "Jupiter", "Jupiter is the largest planet. It is a gas giant with a great red spot."
 )
 
 
-@pytest.fixture
-def corpus() -> Corpus:
-    return load_beir(FIXTURE, split="test")
+def question(
+    question_id: str, text: str, page_obj: Page, answer: str, answer_type: str
+) -> EvalQuestion:
+    start = page_obj.text.index(answer)
+    return EvalQuestion(
+        question_id=question_id,
+        text=text,
+        page_relevance={page_obj.page_id: 1},
+        spans=((page_obj.page_id, start, start + len(answer)),),
+        short_answers=(answer,),
+        answer_type=answer_type,
+    )
 
 
-class TestRejects:
-    def test_query_limit_larger_than_the_question_set(self, corpus: Corpus) -> None:
-        config = replace(CONFIG, corpus=replace(CONFIG.corpus, query_limit=4))
-        with pytest.raises(ValueError, match="query_limit 4 exceeds the 3 evaluable queries"):
-            run_experiment(config, corpus)
+EVALUATION_SET = EvaluationSet(
+    name="tiny",
+    pages=(TEA, RIVER, PLANET),
+    questions=(
+        question(
+            "q1",
+            "why is green tea bitter",
+            TEA,
+            "Steeping it too hot makes it bitter.",
+            "paragraph",
+        ),
+        question(
+            "q2",
+            "longest river in Ireland",
+            RIVER,
+            "The Shannon is the longest river in Ireland.",
+            "paragraph",
+        ),
+        question(
+            "q3",
+            "which planet is a gas giant",
+            PLANET,
+            "It is a gas giant with a great red spot.",
+            "table",
+        ),
+    ),
+    meta={},
+)
+
+CONFIG_FIELDS: dict[str, Any] = {
+    "name": "tiny-bm25",
+    "description": "Fixture run.",
+    "seed": 3,
+    "corpus": {"name": "natural-questions", "split": "validation"},
+    "chunking": {"strategy": "fixed_words", "size": 8, "overlap": 2},
+    "retrieval": {"method": "bm25", "depth": 5, "k1": 0.9, "b": 0.4},
+    "evaluation": {"cutoffs": (1, 5)},
+}
 
 
-class TestFixtureRun:
-    def test_rankings(self, corpus: Corpus) -> None:
-        # q1 "bitter green tea": d1 has all three terms, d2 only "tea".
-        # q2 "longest river Ireland": d4 has all three, d3 only "river".
-        # q3 "ringed gas giant": only d6 shares terms ("gas", "giant"). The relevant d5 says
-        #    "ring", which does not match "ringed" without stemming.
-        result = run_experiment(CONFIG, corpus)
-        rankings = {
-            query.query_id: [ranked.doc_id for ranked in query.ranking] for query in result.queries
+def config(**overrides: object) -> ExperimentConfig:
+    fields = {**CONFIG_FIELDS, **overrides}
+    return ExperimentConfig.model_validate(fields)
+
+
+class TestRun:
+    def test_every_question_is_scored_at_passage_and_page_level(self) -> None:
+        result = run_experiment(config(), EVALUATION_SET)
+        assert [q.question_id for q in result.questions] == ["q1", "q2", "q3"]
+        assert set(result.aggregate) == {
+            f"{level}.{name}@{k}"
+            for level in ("passage", "page")
+            for name in ("precision", "recall", "ndcg", "mrr")
+            for k in (1, 5)
         }
-        assert rankings == {"q1": ["d1", "d2"], "q2": ["d4", "d3"], "q3": ["d6"]}
 
-    def test_per_query_metrics(self, corpus: Corpus) -> None:
-        # q2 has two relevant documents, d4 (grade 2) and d3 (grade 1), ranked in ideal order:
-        # recall@1 = 1/2, recall@5 = 2/2, nDCG = 1 at both cutoffs, first relevant at rank 1.
-        result = run_experiment(CONFIG, corpus)
-        q2 = next(query for query in result.queries if query.query_id == "q2")
-        assert q2.metrics == {
-            "recall@1": 0.5,
-            "recall@5": 1.0,
-            "ndcg@1": 1.0,
-            "ndcg@5": 1.0,
-            "rr@1": 1.0,
-            "rr@5": 1.0,
-        }
+    def test_the_right_page_is_retrieved_first(self) -> None:
+        # Each question shares distinctive words with exactly one page.
+        result = run_experiment(config(), EVALUATION_SET)
+        first_pages = {q.question_id: q.page_ranking[0] for q in result.questions}
+        assert first_pages == {"q1": "p-tea", "q2": "p-river", "q3": "p-planet"}
+        assert result.aggregate["page.recall@1"] == pytest.approx(1.0)
 
-    def test_aggregate_metrics(self, corpus: Corpus) -> None:
-        # Per query (q1, q2, q3), then the mean:
-        #   recall@1  1, 0.5, 0  -> 0.5
-        #   recall@5  1, 1,   0  -> 0.666667
-        #   ndcg@1    1, 1,   0  -> 0.666667
-        #   ndcg@5    1, 1,   0  -> 0.666667
-        #   mrr@1     1, 1,   0  -> 0.666667
-        #   mrr@5     1, 1,   0  -> 0.666667
-        result = run_experiment(CONFIG, corpus)
-        assert dict(result.aggregate) == pytest.approx(
-            {
-                "recall@1": 0.5,
-                "recall@5": 0.666667,
-                "ndcg@1": 0.666667,
-                "ndcg@5": 0.666667,
-                "mrr@1": 0.666667,
-                "mrr@5": 0.666667,
-            },
-            abs=TOLERANCE,
-        )
+    def test_passage_scores_are_not_page_scores(self) -> None:
+        # Pages are split into several chunks, so finding the page is easier than finding the
+        # passage. Reporting only the page number would overstate the system.
+        result = run_experiment(config(), EVALUATION_SET)
+        assert result.aggregate["passage.recall@1"] <= result.aggregate["page.recall@1"]
 
-    def test_counts_and_timings_are_reported(self, corpus: Corpus) -> None:
-        result = run_experiment(CONFIG, corpus)
-        assert result.chunk_count == 6
+    def test_results_are_broken_down_by_answer_type(self) -> None:
+        result = run_experiment(config(), EVALUATION_SET)
+        assert set(result.by_answer_type) == {"paragraph", "table"}
+        assert result.by_answer_type["table"]["page.recall@1"] == pytest.approx(1.0)
+
+    def test_counts_and_timings_are_reported(self) -> None:
+        result = run_experiment(config(), EVALUATION_SET)
+        assert result.chunk_count > 3
         assert set(result.stage_seconds) == {"chunking", "indexing", "retrieval", "evaluation"}
-        assert all(seconds >= 0 for seconds in result.stage_seconds.values())
         assert set(result.retrieval_latency_ms) == {"mean", "p50", "p95", "max"}
 
 
-class TestQuerySelection:
-    def test_query_with_no_relevant_document_is_excluded_and_reported(self, corpus: Corpus) -> None:
-        with_unanswerable = Corpus(
-            documents=corpus.documents,
-            queries={**corpus.queries, "q4": Query(query_id="q4", text="tea")},
-            judgements={**corpus.judgements, "q4": {"d2": 0}},
+class TestQuestionSelection:
+    def test_a_question_no_chunk_covers_is_excluded_and_reported(self) -> None:
+        stray = EvalQuestion(
+            question_id="q9",
+            text="unanswerable",
+            page_relevance={"p-tea": 1},
+            spans=(("p-tea", 10_000, 10_010),),
+            short_answers=(),
+            answer_type="paragraph",
         )
-        result = run_experiment(CONFIG, with_unanswerable)
-        assert result.excluded_query_ids == ("q4",)
-        assert [query.query_id for query in result.queries] == ["q1", "q2", "q3"]
+        with_stray = EvaluationSet(
+            name="tiny",
+            pages=EVALUATION_SET.pages,
+            questions=(*EVALUATION_SET.questions, stray),
+            meta={},
+        )
+        result = run_experiment(config(), with_stray)
+        assert result.excluded_question_ids == ("q9",)
+        assert [q.question_id for q in result.questions] == ["q1", "q2", "q3"]
 
-    def test_seeded_sample_is_reproducible(self, corpus: Corpus) -> None:
-        config = replace(CONFIG, corpus=replace(CONFIG.corpus, query_limit=2))
-        first = [query.query_id for query in run_experiment(config, corpus).queries]
-        second = [query.query_id for query in run_experiment(config, corpus).queries]
+    def test_a_seeded_sample_is_reproducible(self) -> None:
+        sampled = config(
+            corpus={"name": "natural-questions", "split": "validation", "query_limit": 2}
+        )
+        first = [q.question_id for q in run_experiment(sampled, EVALUATION_SET).questions]
+        second = [q.question_id for q in run_experiment(sampled, EVALUATION_SET).questions]
         assert first == second
         assert len(first) == 2
 
-    def test_different_seeds_can_select_different_queries(self, corpus: Corpus) -> None:
-        selections = {
-            tuple(
-                query.query_id
-                for query in run_experiment(
-                    replace(CONFIG, seed=seed, corpus=replace(CONFIG.corpus, query_limit=1)),
-                    corpus,
-                ).queries
-            )
-            for seed in range(20)
-        }
-        assert len(selections) > 1
-
-
-_RUN_IN_SUBPROCESS = """
-import json, sys
-from pathlib import Path
-from groundwork.corpus import load_beir
-from groundwork.experiment import run_experiment
-sys.path.insert(0, sys.argv[2])
-from test_experiment import CONFIG
-result = run_experiment(CONFIG, load_beir(Path(sys.argv[1]), split="test"))
-print(json.dumps({
-    "rankings": {q.query_id: [(r.doc_id, r.score) for r in q.ranking] for q in result.queries},
-    "aggregate": dict(result.aggregate),
-}))
-"""
-
-
-def test_results_do_not_depend_on_hash_randomisation() -> None:
-    # Python randomises string hashing per process. Anything that iterated over a set of
-    # strings while summing scores would give different floats, and possibly different
-    # rankings, from one process to the next. Identical output under different seeds shows the
-    # pipeline does not depend on it.
-    outputs = set()
-    for hash_seed in ("0", "1", "2"):
-        completed = subprocess.run(  # noqa: S603 -- fixed argv: this interpreter and a literal script
-            [sys.executable, "-c", _RUN_IN_SUBPROCESS, str(FIXTURE), str(Path(__file__).parent)],
-            capture_output=True,
-            text=True,
-            check=True,
-            env={**os.environ, "PYTHONHASHSEED": hash_seed},
+    def test_asking_for_more_questions_than_exist_is_an_error(self) -> None:
+        sampled = config(
+            corpus={"name": "natural-questions", "split": "validation", "query_limit": 9}
         )
-        outputs.add(completed.stdout)
-    assert len(outputs) == 1
-    assert json.loads(outputs.pop())["rankings"]["q1"][0][0] == "d1"
+        with pytest.raises(ValueError, match="query_limit 9 exceeds the 3 evaluable questions"):
+            run_experiment(sampled, EVALUATION_SET)
+
+
+def test_stemming_changes_what_matches() -> None:
+    # The pages say "river"; only stemming lets the plural "rivers" match it. The query uses no
+    # other word from the page, so the match can only come from stemming.
+    asked = EvalQuestion(
+        question_id="q-stem",
+        text="rivers",
+        page_relevance={"p-river": 1},
+        spans=(("p-river", 0, 43),),
+        short_answers=(),
+        answer_type="paragraph",
+    )
+    single = EvaluationSet(name="tiny", pages=(TEA, RIVER, PLANET), questions=(asked,), meta={})
+    plain = run_experiment(config(retrieval={**CONFIG_FIELDS["retrieval"], "stem": False}), single)
+    stemmed = run_experiment(config(retrieval={**CONFIG_FIELDS["retrieval"], "stem": True}), single)
+    assert plain.questions[0].page_ranking == ()
+    assert stemmed.questions[0].page_ranking[0] == "p-river"

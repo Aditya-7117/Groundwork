@@ -4,10 +4,10 @@ Each run gets its own directory, results/<experiment>/<UTC start>-<config digest
 never overwritten. It holds:
 
 - result.json: the full config and its digest, the code version (git commit and whether the
-  working tree had uncommitted changes), the corpus and its checksum, the hardware, the timings,
-  and every metric, both averaged and per query.
-- run.trec: the rankings in the standard TREC run format, so the numbers can be recomputed with
-  an independent tool such as trec_eval.
+  working tree had uncommitted changes), the corpus and its provenance, the hardware, the
+  timings, and every metric: averaged, broken down by answer type, and per question.
+- run.passages.trec and run.pages.trec: the rankings in the standard TREC run format, so the
+  numbers can be recomputed with an independent tool such as trec_eval.
 """
 
 import json
@@ -18,19 +18,22 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from groundwork import __version__
 from groundwork.config import ExperimentConfig, config_digest
 from groundwork.experiment import ExperimentResult
-from groundwork.sources import CorpusSource
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
-"""Version of the result.json layout. Increment it whenever a field changes meaning or moves."""
+SCHEMA_VERSION = 2
+"""Version of the result.json layout. Increment it whenever a field changes meaning or moves.
+
+Version 2 reports metrics at passage and page level, adds a breakdown by answer type, and
+describes the corpus as a record of its own rather than a single downloaded archive.
+"""
 
 
 class ArtefactError(RuntimeError):
@@ -59,8 +62,7 @@ class RunRecord:
 
     config: ExperimentConfig
     config_path: Path
-    source: CorpusSource
-    document_count: int
+    corpus: Mapping[str, object]
     result: ExperimentResult
     started_at: datetime
     finished_at: datetime
@@ -90,7 +92,8 @@ def write_artefact(record: RunRecord, results_dir: Path) -> Path:
 
     parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=parent, prefix=".incomplete-"))
-    (staging / "run.trec").write_text(_trec_run(record), encoding="utf-8")
+    for level in ("passages", "pages"):
+        (staging / f"run.{level}.trec").write_text(_trec_run(record, level), encoding="utf-8")
     (staging / "result.json").write_text(
         json.dumps(_result_document(record, digest), indent=2) + "\n", encoding="utf-8"
     )
@@ -144,13 +147,13 @@ def _result_document(record: RunRecord, digest: str) -> dict[str, object]:
     )
     return {
         "schema_version": SCHEMA_VERSION,
-        "provisional": record.source.provisional,
+        "provisional": bool(record.corpus.get("provisional", False)),
         "experiment": {
             "name": config.name,
             "description": config.description,
             "config_path": record.config_path.as_posix(),
             "config_digest": digest,
-            "config": asdict(config),
+            "config": config.model_dump(mode="json"),
         },
         "code": {
             "groundwork_version": record.code.package_version,
@@ -158,18 +161,18 @@ def _result_document(record: RunRecord, digest: str) -> dict[str, object]:
             "git_dirty": record.code.git_dirty,
         },
         "corpus": {
-            "name": record.source.name,
-            "url": record.source.url,
-            "sha256": record.source.sha256,
-            "licence": record.source.licence,
+            **dict(record.corpus),
             "split": config.corpus.split,
-            "documents": record.document_count,
             "chunks": result.chunk_count,
         },
-        "queries": {
-            "evaluated": len(result.queries),
+        "questions": {
+            "evaluated": len(result.questions),
             "selection": selection,
-            "excluded_no_relevant_document": list(result.excluded_query_ids),
+            "excluded_no_chunk_covers_the_answer": list(result.excluded_question_ids),
+            "by_answer_type": {
+                answer_type: sum(1 for q in result.questions if q.answer_type == answer_type)
+                for answer_type in sorted({q.answer_type for q in result.questions})
+            },
         },
         "environment": dict(record.environment),
         "timing": {
@@ -180,19 +183,31 @@ def _result_document(record: RunRecord, digest: str) -> dict[str, object]:
         },
         "metrics": {
             "aggregate": dict(result.aggregate),
-            "per_query": {query.query_id: dict(query.metrics) for query in result.queries},
+            "by_answer_type": {
+                answer_type: dict(values) for answer_type, values in result.by_answer_type.items()
+            },
+            "per_question": {
+                question.question_id: dict(question.metrics) for question in result.questions
+            },
         },
-        "files": {"run": "run.trec"},
+        "files": {"passages": "run.passages.trec", "pages": "run.pages.trec"},
     }
 
 
-def _trec_run(record: RunRecord) -> str:
-    # repr keeps every digit of the score, so rounding cannot create ties that were not there.
-    return "".join(
-        f"{query.query_id} Q0 {ranked.doc_id} {rank} {ranked.score!r} {record.config.name}\n"
-        for query in record.result.queries
-        for rank, ranked in enumerate(query.ranking, start=1)
-    )
+def _trec_run(record: RunRecord, level: str) -> str:
+    """Write one ranking per question in the TREC run format.
+
+    Scores descend with rank rather than carrying the retriever's own scores, because the ranking
+    is what the metrics are computed from. An independent tool re-scoring this file therefore
+    checks the metric code, not the retriever's arithmetic.
+    """
+    lines = []
+    for question in record.result.questions:
+        ranking = question.chunk_ranking if level == "passages" else question.page_ranking
+        for rank, item in enumerate(ranking, start=1):
+            score = len(ranking) - rank + 1
+            lines.append(f"{question.question_id} Q0 {item} {rank} {score} {record.config.name}\n")
+    return "".join(lines)
 
 
 def _cpu_model() -> str | None:
