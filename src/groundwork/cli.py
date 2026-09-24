@@ -4,6 +4,7 @@
     groundwork grid                 write the config file of every setup in the grid
     groundwork run CONFIG [...]     run experiments and write one results artefact each
     groundwork answer CONFIG        write answers from chosen setups' latest retrieval runs
+    groundwork label ANSWERS_DIR    label a blind sample of answers by hand
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
 written, are command-line options rather than config fields, so the same experiment has the same
@@ -11,12 +12,19 @@ config digest everywhere.
 """
 
 import argparse
+import json
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from groundwork.answering import AnsweringError, answer_setup, latest_run, stratified_sample
+from groundwork.answering import (
+    AnsweringError,
+    answer_setup,
+    latest_run,
+    load_answers,
+    stratified_sample,
+)
 from groundwork.artefact import (
     ArtefactError,
     RunRecord,
@@ -34,6 +42,7 @@ from groundwork.evaluation import EvaluationSet, EvaluationSetError, load_built_
 from groundwork.experiment import LocalModels, ModelProvider, run_experiment
 from groundwork.generation import GenerationError, OllamaWriter
 from groundwork.grid import write_grid
+from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
 from groundwork.rerank import RerankError
@@ -52,6 +61,7 @@ _FAILURES = (
     RerankError,
     AnsweringError,
     GenerationError,
+    LabellingError,
 )
 
 
@@ -81,6 +91,8 @@ def main(
         if arguments.command == "grid":
             write_grid(arguments.out)
             return 0
+        if arguments.command == "label":
+            return _label(arguments.answers, arguments.results_dir)
         if arguments.command == "answer":
             return _answer(arguments.config, data_dir, arguments.results_dir, now=now or _utc_now)
         return _run(
@@ -218,6 +230,26 @@ def _answer(config_path: Path, data_dir: Path, results_dir: Path, *, now: Now) -
     return 0
 
 
+def _label(answers_dir: Path, results_dir: Path) -> int:
+    """Label the blind sample of a stage-two run's answers, resuming where the last session ended.
+
+    Labels are saved under results/labels/, next to the runs they describe, because the agreement
+    numbers cannot be reproduced without them.
+    """
+    document = json.loads((answers_dir / "result.json").read_text(encoding="utf-8"))
+    name = document["experiment"]["name"]
+    sample = label_sample(
+        load_answers(answers_dir / "answers.jsonl"), seed=document["experiment"]["config"]["seed"]
+    )
+    labels_path = results_dir / "labels" / f"{name}.jsonl"
+    done = run_labelling(sample, labels_path)
+    logger.info(
+        "labelling session ended",
+        extra={"labelled": done, "of": len(sample), "path": str(labels_path)},
+    )
+    return 0
+
+
 def _load(config: ExperimentConfig, data_dir: Path) -> EvaluationSet:
     """Load the evaluation set the config names.
 
@@ -279,6 +311,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("results"),
         help="runs and output (default: results)",
+    )
+    label = commands.add_parser("label", help="label a blind sample of answers by hand")
+    label.add_argument("answers", type=Path, help="a stage-two run directory")
+    label.add_argument(
+        "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
     )
     return parser
 
