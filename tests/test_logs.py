@@ -19,9 +19,11 @@ def test_event_level_logger_and_utc_time() -> None:
 
 
 def test_extra_fields_become_top_level_keys() -> None:
-    payload = json.loads(JsonFormatter().format(_record("done", queries=300, corpus="scifact")))
+    payload = json.loads(
+        JsonFormatter().format(_record("done", queries=300, corpus="natural-questions"))
+    )
     assert payload["queries"] == 300
-    assert payload["corpus"] == "scifact"
+    assert payload["corpus"] == "natural-questions"
 
 
 def test_standard_record_attributes_are_not_repeated() -> None:

@@ -23,16 +23,15 @@ from groundwork.artefact import (
     write_artefact,
 )
 from groundwork.config import ConfigError, ExperimentConfig, load_config
-from groundwork.corpus import CorpusError, load_beir
+from groundwork.download import SourceError
 from groundwork.embeddings import EmbeddingError
-from groundwork.evaluation import EvaluationSet, EvaluationSetError, from_beir, load_built_corpus
+from groundwork.evaluation import EvaluationSet, EvaluationSetError, load_built_corpus
 from groundwork.experiment import LocalModels, ModelProvider, run_experiment
 from groundwork.grid import write_grid
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
-from groundwork.sources import SOURCES, SourceError, fetch_archive, get_source
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,6 @@ _FAILURES = (
     SourceError,
     EvaluationSetError,
     ArtefactError,
-    CorpusError,
     EmbeddingError,
     RerankError,
 )
@@ -166,12 +164,9 @@ def _load(config: ExperimentConfig, data_dir: Path) -> EvaluationSet:
     """
     if config.corpus.name == NATURAL_QUESTIONS.name:
         return load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
-    if config.corpus.name in SOURCES:
-        source = get_source(config.corpus.name)
-        directory = fetch_archive(source, data_dir)
-        return from_beir(load_beir(directory, split=config.corpus.split), config.corpus.name)
-    known = ", ".join(sorted({NATURAL_QUESTIONS.name, *SOURCES}))
-    raise EvaluationSetError(f"unknown corpus {config.corpus.name!r}; known: {known}")
+    raise EvaluationSetError(
+        f"unknown corpus {config.corpus.name!r}; known: {NATURAL_QUESTIONS.name}"
+    )
 
 
 def _corpus_record(evaluation_set: EvaluationSet, config: ExperimentConfig) -> dict[str, object]:

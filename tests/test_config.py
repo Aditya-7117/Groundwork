@@ -23,8 +23,8 @@ description = "A config used by the tests."
 seed = 7
 
 [corpus]
-name = "beir-scifact"
-split = "test"
+name = "natural-questions"
+split = "validation"
 
 [chunking]
 strategy = "fixed_words"
@@ -171,7 +171,7 @@ class TestRejectsInvalidConfig:
             load_config(_write(tmp_path, text))
 
     def test_query_limit_must_be_positive(self, tmp_path: Path) -> None:
-        text = _replace('split = "test"', 'split = "test"\nquery_limit = 0')
+        text = _replace('split = "validation"', 'split = "validation"\nquery_limit = 0')
         with pytest.raises(
             ConfigError, match=r"\[corpus\.query_limit\] Input should be greater than or equal to 1"
         ):
@@ -184,7 +184,7 @@ class TestLoadsValidConfig:
             name="example-bm25",
             description="A config used by the tests.",
             seed=7,
-            corpus=CorpusConfig(name="beir-scifact", split="test", query_limit=None),
+            corpus=CorpusConfig(name="natural-questions", split="validation", query_limit=None),
             chunking=ChunkingConfig(strategy="fixed_words", size=200, overlap=50),
             retrieval=RetrievalConfig(
                 method="bm25", depth=100, bm25=BM25Config(k1=0.9, b=0.4, stem=False)
@@ -210,10 +210,14 @@ class TestLoadsValidConfig:
         assert config.rerank == RerankConfig(model="bge-reranker-v2-m3", depth=50)
 
     def test_optional_query_limit(self, tmp_path: Path) -> None:
-        text = _replace('split = "test"', 'split = "test"\nquery_limit = 50')
+        text = _replace('split = "validation"', 'split = "validation"\nquery_limit = 50')
         assert load_config(_write(tmp_path, text)).corpus.query_limit == 50
 
-    @pytest.mark.parametrize("path", sorted(CONFIGS_DIR.glob("*.toml")), ids=lambda p: p.name)
+    @pytest.mark.parametrize(
+        "path",
+        sorted(CONFIGS_DIR.rglob("*.toml")),
+        ids=lambda p: p.relative_to(CONFIGS_DIR).as_posix(),
+    )
     def test_committed_configs_are_valid(self, path: Path) -> None:
         load_config(path)
 

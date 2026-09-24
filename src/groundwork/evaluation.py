@@ -6,9 +6,6 @@ Relevance is judged at two levels, and both are reported:
   answer span. This is what a generator actually receives, so it is the number that matters.
 - **Page level**: the page holding the answer. Easier, and reported alongside so the two can be
   compared.
-
-A corpus that carries only page-level judgements, such as a BEIR set, has no answer spans. Every
-chunk of a relevant page is then treated as relevant, which is the closest equivalent.
 """
 
 import gzip
@@ -21,7 +18,6 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from groundwork.chunking import Chunk, overlapping_chunks
-from groundwork.corpus import Corpus
 from groundwork.page import Block, BlockKind, Page
 
 logger = logging.getLogger(__name__)
@@ -92,62 +88,18 @@ def load_built_corpus(directory: Path) -> EvaluationSet:
     return EvaluationSet(name=directory.parent.name, pages=pages, questions=questions, meta=meta)
 
 
-def from_beir(corpus: Corpus, name: str) -> EvaluationSet:
-    """Adapt a BEIR-style corpus, which judges whole documents rather than passages.
-
-    Each document becomes a one-block page, and every chunk of a relevant document counts as
-    relevant, since there are no answer spans to narrow it down.
-    """
-    pages = tuple(
-        Page(
-            page_id=document.doc_id,
-            title=document.title,
-            url="",
-            text=document.text,
-            blocks=(
-                Block(
-                    kind="paragraph",
-                    section="",
-                    text=document.text,
-                    start=0,
-                    end=len(document.text),
-                ),
-            ),
-        )
-        for document in corpus.documents.values()
-    )
-    questions = tuple(
-        EvalQuestion(
-            question_id=query_id,
-            text=corpus.queries[query_id].text,
-            page_relevance=dict(judgements),
-            spans=(),
-            short_answers=(),
-            answer_type="unknown",
-        )
-        for query_id, judgements in sorted(corpus.judgements.items())
-    )
-    return EvaluationSet(name=name, pages=pages, questions=questions, meta={"format": "beir"})
-
-
 def chunk_relevance(
     question: EvalQuestion, chunks_by_page: Mapping[str, Sequence[Chunk]]
 ) -> dict[str, int]:
     """Return the relevant chunk ids for one question, with their grades.
 
-    A chunk is relevant when it overlaps an answer span. Without spans, every chunk of a relevant
-    page inherits that page's grade.
+    A chunk is relevant when it overlaps an answer span, and takes the grade of the span's page.
     """
     relevance: dict[str, int] = {}
-    if question.spans:
-        for page_id, start, end in question.spans:
-            grade = question.page_relevance.get(page_id, 1)
-            for chunk_id in overlapping_chunks(chunks_by_page.get(page_id, ()), start, end):
-                relevance[chunk_id] = max(relevance.get(chunk_id, 0), grade)
-        return relevance
-    for page_id, grade in question.page_relevance.items():
-        for chunk in chunks_by_page.get(page_id, ()):
-            relevance[chunk.chunk_id] = grade
+    for page_id, start, end in question.spans:
+        grade = question.page_relevance.get(page_id, 1)
+        for chunk_id in overlapping_chunks(chunks_by_page.get(page_id, ()), start, end):
+            relevance[chunk_id] = max(relevance.get(chunk_id, 0), grade)
     return relevance
 
 

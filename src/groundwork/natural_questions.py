@@ -26,8 +26,8 @@ from typing import Any, Literal
 
 import pyarrow.parquet as pq
 
+from groundwork.download import Downloader, SourceError, download_https
 from groundwork.page import BOILERPLATE_SECTIONS, BuiltPage, TokenStream, build_page, tag_name
-from groundwork.sources import Downloader, SourceError, download_https
 
 logger = logging.getLogger(__name__)
 
