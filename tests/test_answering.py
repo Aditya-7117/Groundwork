@@ -161,6 +161,7 @@ class TestAnswerSetup:
         assert question_text == "longest river in ireland"
         assert len(passages) == 2
         assert passages[0].startswith("River Shannon\n")
+        assert answers[0].passages == tuple(passages)
         assert answers[0].setup == "tiny-bm25"
         assert answers[1].declined
 

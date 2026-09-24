@@ -42,6 +42,8 @@ class Answer:
         question_id: The question.
         answer_type: Where its reference answer sits: paragraph, table or list.
         chunk_ids: The chunks the writer read, best first.
+        passages: Their texts, exactly as the writer read them, so judging and labelling need no
+            rebuild and see the same words.
         text: The answer.
         declined: Whether the writer said it did not know.
         prompt_tokens: Tokens read.
@@ -53,6 +55,7 @@ class Answer:
     question_id: str
     answer_type: str
     chunk_ids: tuple[str, ...]
+    passages: tuple[str, ...]
     text: str
     declined: bool
     prompt_tokens: int
@@ -152,13 +155,15 @@ def answer_setup(
         chunk_ids = ranking.get(question.question_id)
         if not chunk_ids:
             raise AnsweringError(f"{run_dir}: no ranking for question {question.question_id}")
-        generation = write(question.text, [texts[chunk_id] for chunk_id in chunk_ids])
+        passages_read = tuple(texts[chunk_id] for chunk_id in chunk_ids)
+        generation = write(question.text, passages_read)
         answers.append(
             Answer(
                 setup=config.name,
                 question_id=question.question_id,
                 answer_type=question.answer_type,
                 chunk_ids=chunk_ids,
+                passages=passages_read,
                 text=generation.text,
                 declined=generation.declined,
                 prompt_tokens=generation.prompt_tokens,
@@ -216,6 +221,7 @@ def load_answers(path: Path) -> tuple[Answer, ...]:
                     question_id=str(row["question_id"]),
                     answer_type=str(row["answer_type"]),
                     chunk_ids=tuple(str(item) for item in _sequence(row["chunk_ids"])),
+                    passages=tuple(str(item) for item in _sequence(row["passages"])),
                     text=str(row["text"]),
                     declined=bool(row["declined"]),
                     prompt_tokens=_integer(row["prompt_tokens"]),
