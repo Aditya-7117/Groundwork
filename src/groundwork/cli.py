@@ -81,7 +81,9 @@ def main(
             arguments.results_dir,
             now=now or _utc_now,
             models=models
-            or LocalModels(cache_dir=data_dir / "embeddings", weights_dir=data_dir / "huggingface"),
+            or LocalModels(
+                cache_dir=data_dir / "embeddings", weights_dir=data_dir / "huggingface" / "hub"
+            ),
         )
     except _FAILURES as error:
         logger.error("command failed", extra={"error": str(error)})  # noqa: TRY400 -- the message is the diagnosis
