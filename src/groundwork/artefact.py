@@ -36,7 +36,7 @@ from groundwork.generation import CONTEXT_TOKENS, SYSTEM_PROMPT
 from groundwork.judging import CORRECTNESS, GROUNDEDNESS
 from groundwork.timing import Timing, summarise_timings
 from groundwork.verdicts import (
-    GEMINI_PRICE,
+    JUDGE_PRICE,
     LEXICAL_SUPPORTED,
     NLI_SUPPORTED,
     Scored,
@@ -267,7 +267,7 @@ def write_verdicts_artefact(record: VerdictsRecord, results_dir: Path) -> Path:
                 rubric.name: {"instruction": rubric.instruction, "labels": list(rubric.labels)}
                 for rubric in (GROUNDEDNESS, CORRECTNESS)
             },
-            "price": asdict(GEMINI_PRICE),
+            "price": asdict(JUDGE_PRICE),
             "budget": record.budget,
             "spent": record.spent,
         },

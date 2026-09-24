@@ -1,4 +1,4 @@
-"""The language-model judge: Gemini labels each answer's groundedness and correctness.
+"""The language-model judge: GPT-6 Luna labels each answer's groundedness and correctness.
 
 Groundedness asks whether everything the answer says is backed by the passages it was written
 from, whatever the truth of the matter; correctness asks whether it matches the reference answer.
@@ -9,9 +9,9 @@ The judge is from a different model family than the writer (decision record 0008
 model grades its own family's text more kindly. Its labels are themselves measured: against a
 word-overlap baseline, an NLI classifier and 200 hand labels (decision 54).
 
-Gemini 3 models are documented to work best at their default temperature, so none is set. The
-same request can therefore get a different label on a fresh call; the response cache is what
-makes a published verdict reproducible.
+The judge runs at high reasoning effort (decision 77). Reasoning models take no temperature, so
+the same request can get a different label on a fresh call; the response cache is what makes a
+published verdict reproducible. Requests are sent with storage off, so the provider keeps no copy.
 """
 
 import logging
@@ -28,9 +28,9 @@ from groundwork.remote import JsonClient, RemoteError
 
 logger = logging.getLogger(__name__)
 
-JUDGE_MODEL = "gemini-3.8-flash"
-API_KEY_VARIABLE = "GEMINI_API_KEY"
-_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+JUDGE_MODEL = "gpt-6-luna"
+API_KEY_VARIABLE = "OPENAI_API_KEY"
+_ENDPOINT = "https://api.openai.com/v1/responses"
 
 type ThinkingLevel = Literal["low", "medium", "high"]
 
@@ -114,40 +114,44 @@ class Verdict:
     cached: bool
 
 
-class _Part(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    text: str = ""
-    thought: bool = False
-
-
 class _Content(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    parts: tuple[_Part, ...] = ()
+    type: str
+    text: str = ""
+    refusal: str = ""
 
 
-class _Candidate(BaseModel):
+class _Item(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    content: _Content
-    finishReason: str = ""  # noqa: N815 -- the API's field name
+    type: str
+    content: tuple[_Content, ...] = ()
+
+
+class _OutputDetails(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    reasoning_tokens: int = 0
 
 
 class _Usage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    promptTokenCount: int = 0  # noqa: N815
-    candidatesTokenCount: int = 0  # noqa: N815
-    thoughtsTokenCount: int = 0  # noqa: N815
+    input_tokens: int = 0
+    output_tokens: int = 0
+    output_tokens_details: _OutputDetails = _OutputDetails()
 
 
 class _Response(BaseModel):
+    """The fields used from a Responses API reply."""
+
     model_config = ConfigDict(extra="ignore")
 
-    candidates: tuple[_Candidate, ...]
-    usageMetadata: _Usage = _Usage()  # noqa: N815
-    modelVersion: str = ""  # noqa: N815
+    status: str
+    model: str = ""
+    output: tuple[_Item, ...]
+    usage: _Usage = _Usage()
 
 
 class _Label(BaseModel):
@@ -169,8 +173,8 @@ def correctness_prompt(question: str, references: Sequence[str], answer: str) ->
     return f"Question: {question}\n\nReference answers:\n{listed}\n\nAnswer: {answer}"
 
 
-class GeminiJudge:
-    """Applies a rubric through the Gemini API, one cached call per judgement."""
+class Judge:
+    """Applies a rubric through the OpenAI Responses API, one cached call per judgement."""
 
     def __init__(
         self,
@@ -184,7 +188,7 @@ class GeminiJudge:
         """Set the model and thinking level, and find the API key.
 
         Raises:
-            JudgeError: If no key is given and GEMINI_API_KEY is not set.
+            JudgeError: If no key is given and OPENAI_API_KEY is not set.
         """
         key = api_key or os.environ.get(API_KEY_VARIABLE)
         if not key:
@@ -202,32 +206,38 @@ class GeminiJudge:
             JudgeError: If the call fails, or the reply is not one of the rubric's labels.
         """
         payload: dict[str, object] = {
-            "systemInstruction": {"parts": [{"text": rubric.instruction}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseSchema": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "reason": {"type": "STRING"},
-                        "label": {"type": "STRING", "enum": list(rubric.labels)},
+            "model": self.model,
+            "input": [
+                {"role": "system", "content": rubric.instruction},
+                {"role": "user", "content": prompt},
+            ],
+            "reasoning": {"effort": self.thinking},
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": rubric.name,
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string"},
+                            "label": {"type": "string", "enum": list(rubric.labels)},
+                        },
+                        "required": ["reason", "label"],
+                        "additionalProperties": False,
                     },
-                    "required": ["reason", "label"],
-                    "propertyOrdering": ["reason", "label"],
-                },
-                "thinkingConfig": {"thinkingLevel": self.thinking},
+                }
             },
+            "store": False,
         }
-        key = request_key({"model": self.model, **payload})
+        key = request_key(payload)
         stored = self._cache.get(key)
         cached = stored is not None
         if stored is None:
             started = time.perf_counter()
             try:
                 raw = self._client.request(
-                    _ENDPOINT.format(model=self.model),
-                    payload,
-                    headers={"x-goog-api-key": self._key},
+                    _ENDPOINT, payload, headers={"Authorization": f"Bearer {self._key}"}
                 )
             except RemoteError as error:
                 raise JudgeError(str(error)) from error
@@ -239,22 +249,33 @@ class GeminiJudge:
 def _verdict(rubric: Rubric, stored: dict[str, object], *, cached: bool) -> Verdict:
     try:
         response = _Response.model_validate(stored["reply"])
-        [candidate] = response.candidates
-        text = "".join(part.text for part in candidate.content.parts if not part.thought)
-        parsed = _Label.model_validate_json(text)
-    except (ValidationError, ValueError, KeyError) as error:
+    except (ValidationError, KeyError) as error:
+        raise JudgeError(f"unreadable judge reply for {rubric.name}: {error}") from error
+    if response.status != "completed":
+        raise JudgeError(f"judge reply for {rubric.name} is {response.status}, not completed")
+    contents = [c for item in response.output if item.type == "message" for c in item.content]
+    refusals = [c.refusal for c in contents if c.type == "refusal"]
+    if refusals:
+        raise JudgeError(f"the judge refused {rubric.name}: {refusals[0]}")
+    try:
+        parsed = _Label.model_validate_json(
+            "".join(c.text for c in contents if c.type == "output_text")
+        )
+    except (ValidationError, ValueError) as error:
         raise JudgeError(f"unreadable judge reply for {rubric.name}: {error}") from error
     if parsed.label not in rubric.labels:
         raise JudgeError(f"label {parsed.label!r} is not in the {rubric.name} rubric")
     seconds = stored.get("seconds", 0.0)
+    thinking = response.usage.output_tokens_details.reasoning_tokens
     return Verdict(
         rubric=rubric.name,
         label=parsed.label,
         reason=parsed.reason,
-        prompt_tokens=response.usageMetadata.promptTokenCount,
-        output_tokens=response.usageMetadata.candidatesTokenCount,
-        thinking_tokens=response.usageMetadata.thoughtsTokenCount,
+        prompt_tokens=response.usage.input_tokens,
+        # The API counts reasoning inside output tokens; they are split here so each is visible.
+        output_tokens=response.usage.output_tokens - thinking,
+        thinking_tokens=thinking,
         seconds=float(seconds) if isinstance(seconds, int | float) else 0.0,
-        model_version=response.modelVersion,
+        model_version=response.model,
         cached=cached,
     )

@@ -93,7 +93,7 @@ def test_the_timing_artefact_records_the_method_and_summary(tmp_path: Path) -> N
             "passages": 1,
             "writer": "qwen3.8-27b-iq4xs",
             "setups": ["a", "b"],
-            "judge": {"model": "gemini-3.8-flash", "thinking": "medium"},
+            "judge": {"model": "gpt-6-luna", "thinking": "high"},
         }
     )
     now = datetime(2026, 9, 25, 10, 0, tzinfo=UTC)

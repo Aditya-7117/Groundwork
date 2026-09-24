@@ -11,7 +11,7 @@ from groundwork.answering import Answer
 from groundwork.artefact import CodeVersion, VerdictsRecord, write_verdicts_artefact
 from groundwork.cache import ResponseCache
 from groundwork.config import StageTwoConfig
-from groundwork.judging import GeminiJudge, Verdict
+from groundwork.judging import Judge, Verdict
 from groundwork.remote import JsonClient, Reply
 from groundwork.verdicts import (
     BudgetExceededError,
@@ -48,7 +48,7 @@ ANSWERS = (
 REFERENCES = {"q1": ("Shannon",), "q2": ("Shannon",), "q3": ("Shannon",)}
 
 
-class FakeGemini:
+class FakeOpenAI:
     """Labels by looking for the word Shannon, and counts calls by rubric."""
 
     def __init__(self, *, thinking_tokens: int = 100) -> None:
@@ -61,8 +61,8 @@ class FakeGemini:
         del url, headers, timeout
         assert body is not None
         request = json.loads(body)
-        rubric = request["systemInstruction"]["parts"][0]["text"]
-        prompt = request["contents"][0]["parts"][0]["text"]
+        rubric = request["input"][0]["content"]
+        prompt = request["input"][1]["content"]
         answer_text = prompt.rsplit("Answer: ", 1)[1]
         right = "Shannon" in answer_text
         if "supported by the passages" in rubric:
@@ -71,24 +71,24 @@ class FakeGemini:
         else:
             self.calls.append("correctness")
             label = "correct" if right else "incorrect"
+        text = json.dumps({"reason": "r", "label": label})
         reply = {
-            "candidates": [
-                {"content": {"parts": [{"text": json.dumps({"reason": "r", "label": label})}]}}
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 1_000,
-                "candidatesTokenCount": 20,
-                "thoughtsTokenCount": self.thinking_tokens,
+            "status": "completed",
+            "model": "gpt-6-luna",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+            "usage": {
+                "input_tokens": 1_000,
+                "output_tokens": 20 + self.thinking_tokens,
+                "output_tokens_details": {"reasoning_tokens": self.thinking_tokens},
             },
-            "modelVersion": "gemini-3.8-flash",
         }
         return Reply(status=200, body=json.dumps(reply).encode())
 
 
-def judge(tmp_path: Path, server: FakeGemini) -> GeminiJudge:
-    return GeminiJudge(
+def judge(tmp_path: Path, server: FakeOpenAI) -> Judge:
+    return Judge(
         cache=ResponseCache(tmp_path / "judge.jsonl"),
-        thinking="medium",
+        thinking="high",
         api_key="k",
         client=JsonClient(transport=server),
     )
@@ -109,8 +109,8 @@ def verdict(prompt: int, output: int, thinking: int) -> Verdict:
 
 
 def test_cost_bills_thinking_as_output() -> None:
-    # 1,000 in at $0.75/M plus (20 + 100) out at $3.75/M = $0.00075 + $0.00045.
-    assert verdict_cost(verdict(1_000, 20, 100)) == pytest.approx(0.0012)
+    # 1,000 in at $0.10/M plus (20 + 100) out at $0.50/M = $0.0001 + $0.00006.
+    assert verdict_cost(verdict(1_000, 20, 100)) == pytest.approx(0.00016)
 
 
 class TestCostGuard:
@@ -120,21 +120,21 @@ class TestCostGuard:
         guard.record(verdict(1_000_000, 0, 0))
 
     def test_stops_when_the_projection_is_far_over_budget(self) -> None:
-        # Each call costs $0.0012; 10,000 calls project to $12 against a $5 budget.
-        guard = CostGuard(budget=5.0, expected_calls=10_000, check_after=2)
+        # Each call costs $0.00016; 100,000 calls project to $16 against a $10 budget.
+        guard = CostGuard(budget=10.0, expected_calls=100_000, check_after=2)
         guard.record(verdict(1_000, 20, 100))
-        with pytest.raises(BudgetExceededError, match=r"projected judging cost \$12\.00"):
+        with pytest.raises(BudgetExceededError, match=r"projected judging cost \$16\.00"):
             guard.record(verdict(1_000, 20, 100))
 
     def test_allows_up_to_half_again_over(self) -> None:
-        # $12 projected against a $10 budget is within the 50% tolerance.
-        guard = CostGuard(budget=10.0, expected_calls=10_000, check_after=2)
+        # $16 projected against a $12 budget is within the 50% tolerance.
+        guard = CostGuard(budget=12.0, expected_calls=100_000, check_after=2)
         guard.record(verdict(1_000, 20, 100))
         guard.record(verdict(1_000, 20, 100))
 
 
 def test_declined_answers_are_never_judged(tmp_path: Path) -> None:
-    server = FakeGemini()
+    server = FakeOpenAI()
     guard = CostGuard(budget=100.0, expected_calls=4)
     judged = judge_all(ANSWERS, REFERENCES, judge(tmp_path, server), guard, workers=2)
     assert set(judged) == {("fixed-bm25", "q1"), ("fixed-bm25", "q2")}
@@ -142,7 +142,7 @@ def test_declined_answers_are_never_judged(tmp_path: Path) -> None:
 
 
 def test_a_budget_overrun_stops_the_run(tmp_path: Path) -> None:
-    server = FakeGemini(thinking_tokens=10_000)
+    server = FakeOpenAI(thinking_tokens=10_000)
     guard = CostGuard(budget=0.001, expected_calls=4, check_after=1)
     with pytest.raises(BudgetExceededError):
         judge_all(ANSWERS, REFERENCES, judge(tmp_path, server), guard, workers=1)
@@ -150,7 +150,7 @@ def test_a_budget_overrun_stops_the_run(tmp_path: Path) -> None:
 
 def test_every_rung_is_recorded_per_answer(tmp_path: Path) -> None:
     guard = CostGuard(budget=100.0, expected_calls=4)
-    judged = judge_all(ANSWERS, REFERENCES, judge(tmp_path, FakeGemini()), guard, workers=2)
+    judged = judge_all(ANSWERS, REFERENCES, judge(tmp_path, FakeOpenAI()), guard, workers=2)
 
     def entailment(passages: Sequence[str], text: str) -> float:
         del passages
@@ -192,7 +192,7 @@ def test_every_rung_is_recorded_per_answer(tmp_path: Path) -> None:
 
 def test_the_verdicts_artefact_records_the_judge_price_and_spend(tmp_path: Path) -> None:
     guard = CostGuard(budget=100.0, expected_calls=4)
-    judged = judge_all(ANSWERS, REFERENCES, judge(tmp_path, FakeGemini()), guard, workers=1)
+    judged = judge_all(ANSWERS, REFERENCES, judge(tmp_path, FakeOpenAI()), guard, workers=1)
     scored = score_answers(ANSWERS, REFERENCES, judged, lambda _passages, _text: 0.9)
     config = StageTwoConfig.model_validate(
         {
@@ -203,7 +203,7 @@ def test_the_verdicts_artefact_records_the_judge_price_and_spend(tmp_path: Path)
             "passages": 1,
             "writer": "qwen3.8-27b-iq4xs",
             "setups": ["fixed-bm25"],
-            "judge": {"model": "gemini-3.8-flash", "thinking": "medium"},
+            "judge": {"model": "gpt-6-luna", "thinking": "high"},
         }
     )
     now = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
@@ -224,8 +224,8 @@ def test_the_verdicts_artefact_records_the_judge_price_and_spend(tmp_path: Path)
     )
     assert directory.parent.name == "stage-two-verdicts"
     document = json.loads((directory / "result.json").read_text(encoding="utf-8"))
-    assert document["judge"]["thinking"] == "medium"
-    assert document["judge"]["price"]["checked"] == "2026-09-24"
+    assert document["judge"]["thinking"] == "high"
+    assert document["judge"]["price"]["checked"] == "2026-09-25"
     assert document["judge"]["spent"] == pytest.approx(guard.spent)
     assert document["setups"]["fixed-bm25"]["decline_rate"] == pytest.approx(1 / 3)
     assert len((directory / "scored.jsonl").read_text(encoding="utf-8").splitlines()) == 3

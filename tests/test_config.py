@@ -251,8 +251,8 @@ writer = "qwen3.8-27b-iq4xs"
 setups = ["fixed-bm25", "sentence-bm25"]
 
 [judge]
-model = "gemini-3.8-flash"
-thinking = "medium"
+model = "gpt-6-luna"
+thinking = "high"
 """
 
 
@@ -262,12 +262,12 @@ class TestStageTwoConfig:
         path.write_text(STAGE_TWO, encoding="utf-8")
         config = load_stage_two_config(path)
         assert config.setups == ("fixed-bm25", "sentence-bm25")
-        assert config.judge.thinking == "medium"
+        assert config.judge.thinking == "high"
 
     @pytest.mark.parametrize(
         ("old", "new", "message"),
         [
-            ('thinking = "medium"', 'thinking = "minimal"', r"\[judge\.thinking\]"),
+            ('thinking = "high"', 'thinking = "minimal"', r"\[judge\.thinking\]"),
             ('"sentence-bm25"]', '"fixed-bm25"]', "setups must not repeat"),
             ('["fixed-bm25", "sentence-bm25"]', "[]", "at least one setup"),
             ('"sentence-bm25"]', '"../escape"]', "must be lowercase letters"),

@@ -10,7 +10,7 @@ from groundwork.cache import ResponseCache
 from groundwork.judging import (
     CORRECTNESS,
     GROUNDEDNESS,
-    GeminiJudge,
+    Judge,
     JudgeError,
     correctness_prompt,
     groundedness_prompt,
@@ -18,24 +18,33 @@ from groundwork.judging import (
 from groundwork.remote import JsonClient, Reply
 
 
-def gemini_reply(label: str, *, thought: bool = False) -> dict[str, object]:
-    parts: list[dict[str, object]] = [
-        {"text": json.dumps({"reason": "Passage 1 says so.", "label": label})}
-    ]
-    if thought:
-        parts.insert(0, {"text": "thinking about it", "thought": True})
+def openai_reply(
+    label: str, *, status: str = "completed", refusal: bool = False
+) -> dict[str, object]:
+    content: dict[str, object] = (
+        {"type": "refusal", "refusal": "I can't help with that."}
+        if refusal
+        else {
+            "type": "output_text",
+            "text": json.dumps({"reason": "Passage 1 says so.", "label": label}),
+        }
+    )
     return {
-        "candidates": [{"content": {"parts": parts}, "finishReason": "STOP"}],
-        "usageMetadata": {
-            "promptTokenCount": 950,
-            "candidatesTokenCount": 21,
-            "thoughtsTokenCount": 180,
+        "status": status,
+        "model": "gpt-6-luna",
+        "output": [
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "content": [content]},
+        ],
+        "usage": {
+            "input_tokens": 950,
+            "output_tokens": 201,
+            "output_tokens_details": {"reasoning_tokens": 180},
         },
-        "modelVersion": "gemini-3.8-flash",
     }
 
 
-class FakeGemini:
+class FakeOpenAI:
     def __init__(self, reply: Mapping[str, object]) -> None:
         self.reply = reply
         self.calls: list[tuple[str, dict[str, object], Mapping[str, str]]] = []
@@ -49,10 +58,10 @@ class FakeGemini:
         return Reply(status=200, body=json.dumps(self.reply).encode())
 
 
-def judge(tmp_path: Path, server: FakeGemini) -> GeminiJudge:
-    return GeminiJudge(
+def judge(tmp_path: Path, server: FakeOpenAI) -> Judge:
+    return Judge(
         cache=ResponseCache(tmp_path / "judge.jsonl"),
-        thinking="low",
+        thinking="high",
         api_key="test-key",
         client=JsonClient(transport=server),
     )
@@ -73,28 +82,44 @@ def test_the_correctness_prompt_lists_every_reference() -> None:
 
 
 def test_the_request_constrains_the_label_and_sends_the_key_in_a_header(tmp_path: Path) -> None:
-    server = FakeGemini(gemini_reply("supported"))
+    server = FakeOpenAI(openai_reply("supported"))
     verdict = judge(tmp_path, server).judge(GROUNDEDNESS, "prompt")
     [(url, body, headers)] = server.calls
-    assert url.endswith("/models/gemini-3.8-flash:generateContent")
-    assert "key=" not in url
-    assert headers["x-goog-api-key"] == "test-key"
-    config = body["generationConfig"]
-    assert isinstance(config, dict)
-    assert config["thinkingConfig"] == {"thinkingLevel": "low"}
-    assert config["responseSchema"]["properties"]["label"]["enum"] == list(GROUNDEDNESS.labels)
+    assert url == "https://api.openai.com/v1/responses"
+    assert headers["Authorization"] == "Bearer test-key"
+    assert body["model"] == "gpt-6-luna"
+    assert body["reasoning"] == {"effort": "high"}
+    assert body["store"] is False
+    text = body["text"]
+    assert isinstance(text, dict)
+    assert text["format"]["strict"] is True
+    assert text["format"]["schema"]["properties"]["label"]["enum"] == list(GROUNDEDNESS.labels)
     assert (verdict.label, verdict.reason) == ("supported", "Passage 1 says so.")
+    # Reasoning is counted inside output tokens by the API; the verdict separates the two.
     assert (verdict.prompt_tokens, verdict.output_tokens, verdict.thinking_tokens) == (950, 21, 180)
+    assert verdict.model_version == "gpt-6-luna"
     assert not verdict.cached
 
 
-def test_thinking_text_is_not_read_as_the_answer(tmp_path: Path) -> None:
-    server = FakeGemini(gemini_reply("not_supported", thought=True))
+def test_the_reasoning_item_is_not_read_as_the_answer(tmp_path: Path) -> None:
+    server = FakeOpenAI(openai_reply("not_supported"))
     assert judge(tmp_path, server).judge(GROUNDEDNESS, "prompt").label == "not_supported"
 
 
+def test_an_incomplete_reply_is_rejected(tmp_path: Path) -> None:
+    server = FakeOpenAI(openai_reply("supported", status="incomplete"))
+    with pytest.raises(JudgeError, match="is incomplete, not completed"):
+        judge(tmp_path, server).judge(GROUNDEDNESS, "prompt")
+
+
+def test_a_refusal_is_rejected(tmp_path: Path) -> None:
+    server = FakeOpenAI(openai_reply("supported", refusal=True))
+    with pytest.raises(JudgeError, match="the judge refused groundedness"):
+        judge(tmp_path, server).judge(GROUNDEDNESS, "prompt")
+
+
 def test_a_repeated_judgement_comes_from_the_cache(tmp_path: Path) -> None:
-    server = FakeGemini(gemini_reply("correct"))
+    server = FakeOpenAI(openai_reply("correct"))
     judge(tmp_path, server).judge(CORRECTNESS, "prompt")
     again = judge(tmp_path, server).judge(CORRECTNESS, "prompt")
     assert len(server.calls) == 1
@@ -103,11 +128,11 @@ def test_a_repeated_judgement_comes_from_the_cache(tmp_path: Path) -> None:
 
 
 def test_the_api_key_is_not_part_of_the_cache_key(tmp_path: Path) -> None:
-    server = FakeGemini(gemini_reply("correct"))
+    server = FakeOpenAI(openai_reply("correct"))
     judge(tmp_path, server).judge(CORRECTNESS, "prompt")
-    GeminiJudge(
+    Judge(
         cache=ResponseCache(tmp_path / "judge.jsonl"),
-        thinking="low",
+        thinking="high",
         api_key="another-key",
         client=JsonClient(transport=server),
     ).judge(CORRECTNESS, "prompt")
@@ -116,13 +141,20 @@ def test_the_api_key_is_not_part_of_the_cache_key(tmp_path: Path) -> None:
 
 
 def test_a_label_outside_the_rubric_is_rejected(tmp_path: Path) -> None:
-    server = FakeGemini(gemini_reply("maybe"))
+    server = FakeOpenAI(openai_reply("maybe"))
     with pytest.raises(JudgeError, match="'maybe' is not in the groundedness rubric"):
         judge(tmp_path, server).judge(GROUNDEDNESS, "prompt")
 
 
 def test_an_unreadable_reply_is_rejected(tmp_path: Path) -> None:
-    server = FakeGemini({"candidates": [{"content": {"parts": [{"text": "not json"}]}}]})
+    server = FakeOpenAI(
+        {
+            "status": "completed",
+            "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "not json"}]}
+            ],
+        }
+    )
     with pytest.raises(JudgeError, match="unreadable judge reply"):
         judge(tmp_path, server).judge(GROUNDEDNESS, "prompt")
 
@@ -130,6 +162,6 @@ def test_an_unreadable_reply_is_rejected(tmp_path: Path) -> None:
 def test_a_missing_key_says_where_to_set_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    with pytest.raises(JudgeError, match=r"set GEMINI_API_KEY \(see \.env\.example\)"):
-        GeminiJudge(cache=ResponseCache(tmp_path / "j.jsonl"), thinking="low")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(JudgeError, match=r"set OPENAI_API_KEY \(see \.env\.example\)"):
+        Judge(cache=ResponseCache(tmp_path / "j.jsonl"), thinking="low")

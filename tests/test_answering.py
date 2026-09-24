@@ -200,7 +200,7 @@ def test_the_stage_two_artefact_records_the_answers_and_what_made_them(
             "passages": 2,
             "writer": "qwen3.8-27b-iq4xs",
             "setups": ["tiny-bm25"],
-            "judge": {"model": "gemini-3.8-flash", "thinking": "medium"},
+            "judge": {"model": "gpt-6-luna", "thinking": "high"},
         }
     )
     directory = write_stage_two_artefact(

@@ -66,7 +66,7 @@ from groundwork.gate import GateError, record_baseline, run_gate
 from groundwork.generation import GenerationError, OllamaWriter
 from groundwork.golden import build_golden
 from groundwork.grid import grid, write_grid
-from groundwork.judging import GeminiJudge, JudgeError
+from groundwork.judging import Judge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
@@ -365,7 +365,7 @@ def _judge(
     evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
     references = {q.question_id: q.short_answers for q in evaluation_set.questions}
     started_at = now()
-    judge = GeminiJudge(
+    judge = Judge(
         cache=ResponseCache(data_dir / "cache" / "judge.jsonl"),
         model=config.judge.model,
         thinking=config.judge.thinking,

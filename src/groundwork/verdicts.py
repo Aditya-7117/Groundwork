@@ -27,7 +27,7 @@ from groundwork.baselines import (
 from groundwork.judging import (
     CORRECTNESS,
     GROUNDEDNESS,
-    GeminiJudge,
+    Judge,
     JudgeError,
     Verdict,
     correctness_prompt,
@@ -49,14 +49,15 @@ class Price:
     source: str
 
 
-GEMINI_PRICE = Price(
-    model="gemini-3.8-flash",
-    input_per_million=0.75,
-    output_per_million=3.75,
+JUDGE_PRICE = Price(
+    model="gpt-6-luna",
+    input_per_million=0.10,
+    output_per_million=0.50,
     currency="USD",
-    checked="2026-09-24",
+    checked="2026-09-25",
     source=(
-        "https://ai.google.dev/gemini-api/docs/pricing, standard tier; thinking billed as output"
+        "https://developers.openai.com/api/docs/pricing, standard tier, short context; reasoning "
+        "tokens are counted as output tokens in the API's usage report"
     ),
 )
 
@@ -65,7 +66,7 @@ class BudgetExceededError(JudgeError):
     """The projected judging cost is more than half again over the approved budget."""
 
 
-def verdict_cost(verdict: Verdict, price: Price = GEMINI_PRICE) -> float:
+def verdict_cost(verdict: Verdict, price: Price = JUDGE_PRICE) -> float:
     """What one judgement costs at the list price; thinking is billed as output."""
     output = verdict.output_tokens + verdict.thinking_tokens
     return (
@@ -160,7 +161,7 @@ def entailment_with(checker: NliChecker) -> Entailment:
 def judge_all(
     answers: Sequence[Answer],
     references: Mapping[str, Sequence[str]],
-    judge: GeminiJudge,
+    judge: Judge,
     guard: CostGuard,
     *,
     workers: int,

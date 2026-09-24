@@ -1,9 +1,9 @@
 """Calling JSON APIs over HTTP, retrying only the failures that are worth retrying.
 
-Two services are called: the local Ollama server that writes answers, and the Gemini API that
-judges them. Under load Gemini answers 429 (rate limited) or 503 (overloaded), and both pass, so
-those are retried with exponential backoff and a random jitter. Any other failure stops at once:
-a 400 means the request itself is wrong, and retrying it would only hide that.
+Two services are called: the local Ollama server that writes answers, and the OpenAI API that
+judges them. Under load a hosted API answers 429 (rate limited) or 503 (overloaded), and both
+pass, so those are retried with exponential backoff and a random jitter. Any other failure stops
+at once: a 400 means the request itself is wrong, and retrying it would only hide that.
 """
 
 import json

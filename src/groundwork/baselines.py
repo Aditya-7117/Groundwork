@@ -1,8 +1,9 @@
 """The cheaper measures the judge is compared against, and the mechanical correctness check.
 
 The groundedness ladder runs from cheapest to dearest: word overlap, an NLI classifier, the
-Gemini judge, and hand labels (decision 54). Each rung is only worth its cost if it agrees with
-the humans better than the rung below, which is what the agreement statistics measure.
+language-model judge, and hand labels (decision 54). Each rung is only worth its cost if it
+agrees with the humans better than the rung below, which is what the agreement statistics
+measure.
 
 - Word overlap: which of the answer's own content words, the ones it adds beyond the question,
   appear in the passages. Restating the question proves nothing, since the passages were

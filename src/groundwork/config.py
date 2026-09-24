@@ -226,7 +226,7 @@ class JudgeConfig(_Section):
     """The language-model judge.
 
     Attributes:
-        model: Gemini model id.
+        model: The judge's model id, for example "gpt-6-luna".
         thinking: How much the judge reasons before labelling.
     """
 
