@@ -3,6 +3,7 @@
     groundwork build-corpus         download the dataset and build the evaluation corpus
     groundwork grid                 write the config file of every setup in the grid
     groundwork run CONFIG [...]     run experiments and write one results artefact each
+    groundwork answer CONFIG        write answers from chosen setups' latest retrieval runs
 
 Paths that depend on the machine, such as where the corpus is cached and where results are
 written, are command-line options rather than config fields, so the same experiment has the same
@@ -15,18 +16,23 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from groundwork.answering import AnsweringError, answer_setup, latest_run, stratified_sample
 from groundwork.artefact import (
     ArtefactError,
     RunRecord,
+    StageTwoRecord,
     current_code_version,
     describe_environment,
     write_artefact,
+    write_stage_two_artefact,
 )
-from groundwork.config import ConfigError, ExperimentConfig, load_config
+from groundwork.cache import ResponseCache
+from groundwork.config import ConfigError, ExperimentConfig, load_config, load_stage_two_config
 from groundwork.download import SourceError
 from groundwork.embeddings import EmbeddingError
 from groundwork.evaluation import EvaluationSet, EvaluationSetError, load_built_corpus
 from groundwork.experiment import LocalModels, ModelProvider, run_experiment
+from groundwork.generation import GenerationError, OllamaWriter
 from groundwork.grid import write_grid
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
@@ -44,6 +50,8 @@ _FAILURES = (
     ArtefactError,
     EmbeddingError,
     RerankError,
+    AnsweringError,
+    GenerationError,
 )
 
 
@@ -73,6 +81,8 @@ def main(
         if arguments.command == "grid":
             write_grid(arguments.out)
             return 0
+        if arguments.command == "answer":
+            return _answer(arguments.config, data_dir, arguments.results_dir, now=now or _utc_now)
         return _run(
             arguments.configs,
             data_dir,
@@ -156,6 +166,58 @@ def _run(
     return 0
 
 
+def _answer(config_path: Path, data_dir: Path, results_dir: Path, *, now: Now) -> int:
+    """Write answers for every setup a stage-two config names.
+
+    Every setup's retrieval run is located before any answer is written, so a missing run fails
+    at once. Answers are cached, so an interrupted run resumes where it stopped.
+    """
+    config = load_stage_two_config(config_path)
+    runs = {setup: latest_run(results_dir, setup) for setup in config.setups}
+    started_at = now()
+    evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
+    questions = stratified_sample(evaluation_set.questions, config.questions, seed=config.seed)
+    writer = OllamaWriter(
+        model=config.writer,
+        cache=ResponseCache(data_dir / "cache" / "answers.jsonl"),
+        seed=config.seed,
+    )
+    code = current_code_version()
+    answers = tuple(
+        answer
+        for setup in config.setups
+        for answer in answer_setup(
+            runs[setup], evaluation_set, questions, writer.write, passages=config.passages
+        )
+    )
+    by_type = {
+        kind: sum(1 for question in questions if question.answer_type == kind)
+        for kind in sorted({question.answer_type for question in questions})
+    }
+    directory = write_stage_two_artefact(
+        StageTwoRecord(
+            config=config,
+            config_path=config_path,
+            runs=runs,
+            sample={
+                "sampled": len(questions),
+                "from": len(evaluation_set.questions),
+                "selection": f"stratified by answer type, seed {config.seed}",
+                "by_answer_type": by_type,
+            },
+            writer_digest=writer.digest,
+            answers=answers,
+            started_at=started_at,
+            finished_at=now(),
+            code=code,
+            environment=describe_environment(),
+        ),
+        results_dir,
+    )
+    logger.info("answers complete", extra={"artefact": str(directory), "answers": len(answers)})
+    return 0
+
+
 def _load(config: ExperimentConfig, data_dir: Path) -> EvaluationSet:
     """Load the evaluation set the config names.
 
@@ -207,6 +269,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
+    )
+    answer = commands.add_parser(
+        "answer", help="write answers from chosen setups' latest retrieval runs"
+    )
+    answer.add_argument("config", type=Path, help="stage-two config file, e.g. configs/stage2.toml")
+    answer.add_argument(
+        "--results-dir",
+        type=Path,
+        default=Path("results"),
+        help="runs and output (default: results)",
     )
     return parser
 

@@ -13,6 +13,7 @@ from groundwork.config import (
     RetrievalConfig,
     config_digest,
     load_config,
+    load_stage_two_config,
 )
 
 CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
@@ -238,3 +239,43 @@ class TestConfigDigest:
         digest = config_digest(load_config(_write(tmp_path, VALID)))
         assert len(digest) == 64
         assert set(digest) <= set("0123456789abcdef")
+
+
+STAGE_TWO = """
+name = "stage-two"
+description = "Answers for the chosen setups."
+seed = 1
+questions = 1000
+passages = 5
+writer = "qwen3.8-27b-iq4xs"
+setups = ["fixed-bm25", "sentence-bm25"]
+
+[judge]
+model = "gemini-3.8-flash"
+thinking = "medium"
+"""
+
+
+class TestStageTwoConfig:
+    def test_a_valid_config_loads(self, tmp_path: Path) -> None:
+        path = tmp_path / "stage2.toml"
+        path.write_text(STAGE_TWO, encoding="utf-8")
+        config = load_stage_two_config(path)
+        assert config.setups == ("fixed-bm25", "sentence-bm25")
+        assert config.judge.thinking == "medium"
+
+    @pytest.mark.parametrize(
+        ("old", "new", "message"),
+        [
+            ('thinking = "medium"', 'thinking = "minimal"', r"\[judge\.thinking\]"),
+            ('"sentence-bm25"]', '"fixed-bm25"]', "setups must not repeat"),
+            ('["fixed-bm25", "sentence-bm25"]', "[]", "at least one setup"),
+            ('"sentence-bm25"]', '"../escape"]', "must be lowercase letters"),
+            ("questions = 1000", "questions = 0", r"\[questions\]"),
+        ],
+    )
+    def test_rejects_invalid_values(self, tmp_path: Path, old: str, new: str, message: str) -> None:
+        path = tmp_path / "stage2.toml"
+        path.write_text(STAGE_TWO.replace(old, new), encoding="utf-8")
+        with pytest.raises(ConfigError, match=message):
+            load_stage_two_config(path)

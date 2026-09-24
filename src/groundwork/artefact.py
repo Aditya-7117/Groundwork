@@ -8,6 +8,9 @@ never overwritten. It holds:
   timings, and every metric: averaged, broken down by answer type, and per question.
 - run.passages.trec and run.pages.trec: the rankings in the standard TREC run format, so the
   numbers can be recomputed with an independent tool such as trec_eval.
+
+A stage-two run, which writes answers from chosen setups' rankings, gets a directory of the same
+shape under results/<stage-two name>/, holding result.json and answers.jsonl.
 """
 
 import json
@@ -23,10 +26,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from groundwork import __version__
-from groundwork.config import ExperimentConfig, config_digest
+from groundwork.answering import Answer, answer_rows, summarise
+from groundwork.config import ExperimentConfig, StageTwoConfig, config_digest
 from groundwork.experiment import ExperimentResult
+from groundwork.generation import CONTEXT_TOKENS, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+STAGE_TWO_SCHEMA_VERSION = 1
+"""Version of a stage-two result.json layout, counted separately from retrieval runs."""
 
 SCHEMA_VERSION = 3
 """Version of the result.json layout. Increment it whenever a field changes meaning or moves.
@@ -73,6 +81,35 @@ class RunRecord:
     environment: Mapping[str, object]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StageTwoRecord:
+    """Everything that goes into one stage-two artefact.
+
+    Attributes:
+        config: The stage-two config.
+        config_path: Where it was read from.
+        runs: The retrieval run directory answered for each setup.
+        sample: How the questions were drawn, and how many of each answer type.
+        writer_digest: Digest of the exact writer weights.
+        answers: Every answer, all setups together.
+        started_at: UTC start.
+        finished_at: UTC finish.
+        code: The code version.
+        environment: The machine.
+    """
+
+    config: StageTwoConfig
+    config_path: Path
+    runs: Mapping[str, Path]
+    sample: Mapping[str, object]
+    writer_digest: str
+    answers: tuple[Answer, ...]
+    started_at: datetime
+    finished_at: datetime
+    code: CodeVersion
+    environment: Mapping[str, object]
+
+
 def write_artefact(record: RunRecord, results_dir: Path) -> Path:
     """Write the artefact for one run and return its directory.
 
@@ -88,18 +125,102 @@ def write_artefact(record: RunRecord, results_dir: Path) -> Path:
             raise ValueError(f"{label} must be timezone-aware UTC, got {moment.isoformat()}")
 
     digest = config_digest(record.config)
-    parent = results_dir / record.config.name
-    directory = parent / f"{record.started_at:%Y%m%dT%H%M%SZ}-{digest[:12]}"
+    return _publish(
+        results_dir / record.config.name,
+        f"{record.started_at:%Y%m%dT%H%M%SZ}-{digest[:12]}",
+        {
+            "run.passages.trec": _trec_run(record, "passages"),
+            "run.pages.trec": _trec_run(record, "pages"),
+            "result.json": json.dumps(_result_document(record, digest), indent=2) + "\n",
+        },
+    )
+
+
+def write_stage_two_artefact(record: StageTwoRecord, results_dir: Path) -> Path:
+    """Write the artefact for one stage-two run and return its directory.
+
+    Raises:
+        ValueError: If a timestamp is not timezone-aware UTC.
+        ArtefactError: If the run directory already exists.
+    """
+    for label, moment in (("started_at", record.started_at), ("finished_at", record.finished_at)):
+        if moment.utcoffset() != timedelta(0):
+            raise ValueError(f"{label} must be timezone-aware UTC, got {moment.isoformat()}")
+    digest = config_digest(record.config)
+    config = record.config
+    document = {
+        "schema_version": STAGE_TWO_SCHEMA_VERSION,
+        "experiment": {
+            "name": config.name,
+            "description": config.description,
+            "config_path": record.config_path.as_posix(),
+            "config_digest": digest,
+            "config": config.model_dump(mode="json"),
+        },
+        "code": {
+            "groundwork_version": record.code.package_version,
+            "git_commit": record.code.git_commit,
+            "git_dirty": record.code.git_dirty,
+        },
+        "environment": dict(record.environment),
+        "writer": {
+            "model": config.writer,
+            "digest": record.writer_digest,
+            "system_prompt": SYSTEM_PROMPT,
+            "temperature": 0,
+            "seed": config.seed,
+            "thinking": False,
+            "context_tokens": CONTEXT_TOKENS,
+            "passages": config.passages,
+        },
+        "questions": dict(record.sample),
+        "runs": {setup: _run_provenance(run_dir) for setup, run_dir in sorted(record.runs.items())},
+        "timing": {
+            "started_at": record.started_at.isoformat(),
+            "finished_at": record.finished_at.isoformat(),
+        },
+        "answers": {
+            setup: summarise([a for a in record.answers if a.setup == setup])
+            for setup in config.setups
+        },
+        "files": {"answers": "answers.jsonl"},
+    }
+    return _publish(
+        results_dir / config.name,
+        f"{record.started_at:%Y%m%dT%H%M%SZ}-{digest[:12]}",
+        {
+            "answers.jsonl": answer_rows(record.answers),
+            "result.json": json.dumps(document, indent=2) + "\n",
+        },
+    )
+
+
+def _run_provenance(run_dir: Path) -> dict[str, object]:
+    """Which retrieval run was answered, and the code and config that produced it."""
+    document = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    return {
+        "path": run_dir.as_posix(),
+        "config_digest": document["experiment"]["config_digest"],
+        "git_commit": document["code"]["git_commit"],
+        "git_dirty": document["code"]["git_dirty"],
+    }
+
+
+def _publish(parent: Path, name: str, files: Mapping[str, str]) -> Path:
+    """Write files into a hidden directory, then rename it into place in one step.
+
+    A crash therefore never leaves a directory that looks complete.
+
+    Raises:
+        ArtefactError: If the directory already exists.
+    """
+    directory = parent / name
     if directory.exists():
         raise ArtefactError(f"run directory already exists, refusing to overwrite: {directory}")
-
     parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=parent, prefix=".incomplete-"))
-    for level in ("passages", "pages"):
-        (staging / f"run.{level}.trec").write_text(_trec_run(record, level), encoding="utf-8")
-    (staging / "result.json").write_text(
-        json.dumps(_result_document(record, digest), indent=2) + "\n", encoding="utf-8"
-    )
+    for filename, content in files.items():
+        (staging / filename).write_text(content, encoding="utf-8")
     staging.rename(directory)
     return directory
 

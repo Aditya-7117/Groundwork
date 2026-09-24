@@ -1,4 +1,7 @@
-"""Experiment configuration: one TOML file in configs/ defines one experiment completely.
+"""Configuration: one TOML file in configs/ defines one run completely.
+
+Two kinds of run are configured. An experiment config defines one retrieval setup. A stage-two
+config names the setups whose retrieval runs get answers written and judged, and how.
 
 Validation is strict: unknown keys, missing keys, wrong types and inconsistent values all fail at
 load time with the file and the offending field named. There are no defaults for anything that
@@ -219,12 +222,79 @@ class ExperimentConfig(_Section):
         return self
 
 
+class JudgeConfig(_Section):
+    """The language-model judge.
+
+    Attributes:
+        model: Gemini model id.
+        thinking: How much the judge reasons before labelling.
+    """
+
+    model: str
+    thinking: Literal["low", "medium", "high"]
+
+
+class StageTwoConfig(_Section):
+    """Answers and judgements for a few chosen setups (decisions 20 and 62).
+
+    Attributes:
+        name: Lowercase slug naming the results directory.
+        description: What this stage-two run is for.
+        seed: Seeds the question sample.
+        questions: How many questions each setup answers, stratified by answer type.
+        passages: How many top-ranked chunks the writer reads.
+        writer: Ollama model that writes the answers.
+        setups: Grid setup names, whose latest retrieval runs are answered.
+        judge: The judge's model and thinking level.
+    """
+
+    name: str
+    description: str
+    seed: int
+    questions: int = Field(ge=1)
+    passages: int = Field(ge=1)
+    writer: str
+    setups: tuple[str, ...]
+    judge: JudgeConfig
+
+    @field_validator("setups", mode="before")
+    @classmethod
+    def _toml_array_as_tuple(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        for name in (self.name, *self.setups):
+            if not _NAME_PATTERN.fullmatch(name):
+                raise ValueError(
+                    f"name {name!r} must be lowercase letters, digits and single hyphens"
+                )
+        if not self.setups:
+            raise ValueError("setups must name at least one setup")
+        if len(set(self.setups)) != len(self.setups):
+            raise ValueError("setups must not repeat")
+        return self
+
+
 def load_config(path: Path) -> ExperimentConfig:
     """Read and validate an experiment config file.
 
     Raises:
         ConfigError: If the file is missing, is not valid TOML, or fails validation.
     """
+    return _load(path, ExperimentConfig)
+
+
+def load_stage_two_config(path: Path) -> StageTwoConfig:
+    """Read and validate a stage-two config file.
+
+    Raises:
+        ConfigError: If the file is missing, is not valid TOML, or fails validation.
+    """
+    return _load(path, StageTwoConfig)
+
+
+def _load[T: BaseModel](path: Path, model: type[T]) -> T:
     try:
         with path.open("rb") as handle:
             raw = tomllib.load(handle)
@@ -233,13 +303,13 @@ def load_config(path: Path) -> ExperimentConfig:
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{path}: not valid TOML: {error}") from error
     try:
-        return ExperimentConfig.model_validate(raw)
+        return model.model_validate(raw)
     except ValidationError as error:
         raise ConfigError(f"{path}: {_explain(error)}") from error
 
 
-def config_digest(config: ExperimentConfig) -> str:
-    """Return a SHA-256 hex digest identifying the experiment a config defines.
+def config_digest(config: ExperimentConfig | StageTwoConfig) -> str:
+    """Return a SHA-256 hex digest identifying the run a config defines.
 
     The digest covers the parsed values, not the file bytes, so comments, whitespace and key order
     do not change it, and any change to a value does.
