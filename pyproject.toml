@@ -7,8 +7,11 @@ requires-python = ">=3.12"
 authors = [{ name = "Aditya Magar" }]
 dependencies = [
     "nltk>=3.10.3",
+    "numpy>=2.5.3",
     "pyarrow>=25.0.1",
     "pydantic>=2.13.5",
+    "scipy>=1.18.1",
+    "sentence-transformers>=6.1.0",
 ]
 
 [project.scripts]
@@ -93,6 +96,11 @@ warn_unreachable = true
 # pyarrow ships no type information, so its imports cannot be checked. Everything read through it
 # is converted to typed records in natural_questions.py before it reaches the rest of the code.
 module = ["pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scipy's sparse module ships no type information; only csc_matrix construction is used.
+module = ["scipy.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

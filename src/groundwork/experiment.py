@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from groundwork.bm25 import BM25Index
+from groundwork.bm25 import SparseBM25
 from groundwork.chunking import Chunk, ChunkingSettings, chunk_pages
 from groundwork.config import ExperimentConfig, RetrievalConfig
 from groundwork.evaluation import EvalQuestion, EvaluationSet, chunk_relevance
@@ -29,7 +29,7 @@ from groundwork.metrics import (
     recall_at_k,
     reciprocal_rank_at_k,
 )
-from groundwork.ranking import rank_pages_by_best_chunk
+from groundwork.retrieval import ChunkTable, rank_from_scores
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,7 @@ def run_experiment(
 
     started = clock()
     index = _build_index(chunks, config.retrieval)
+    table = ChunkTable(chunks)
     stage_seconds["indexing"] = clock() - started
 
     questions, excluded, judgements = _select(config, evaluation_set, chunks_by_page)
@@ -119,9 +120,11 @@ def run_experiment(
     depth = config.retrieval.depth
     for question in questions:
         started = clock()
-        scored = index.search(question.text)
-        chunk_ranking = tuple(item.chunk.chunk_id for item in scored[:depth])
-        page_ranking = tuple(page.page_id for page in rank_pages_by_best_chunk(scored, depth=depth))
+        retrieved = rank_from_scores(
+            table, index.scores(question.text), depth=depth, positive_only=True
+        )
+        chunk_ranking = tuple(item.chunk.chunk_id for item in retrieved.chunks)
+        page_ranking = tuple(page.page_id for page in retrieved.pages)
         latencies_ms.append((clock() - started) * 1000)
         rankings[question.question_id] = (chunk_ranking, page_ranking)
     stage_seconds["retrieval"] = sum(latencies_ms) / 1000
@@ -169,12 +172,12 @@ def run_experiment(
     )
 
 
-def _build_index(chunks: Sequence[Chunk], retrieval: RetrievalConfig) -> BM25Index:
+def _build_index(chunks: Sequence[Chunk], retrieval: RetrievalConfig) -> SparseBM25:
     # An exhaustive match: adding a retrieval method to the config without handling it here is a
     # type error, rather than a config that silently runs BM25.
     match retrieval.method:
         case "bm25":
-            return BM25Index(chunks, k1=retrieval.k1, b=retrieval.b, stem=retrieval.stem)
+            return SparseBM25(chunks, k1=retrieval.k1, b=retrieval.b, stem=retrieval.stem)
 
 
 def _select(

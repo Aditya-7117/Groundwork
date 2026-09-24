@@ -22,7 +22,10 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import numpy as np
 from nltk.stem import PorterStemmer
+from numpy.typing import NDArray
+from scipy import sparse
 
 from groundwork.chunking import Chunk
 
@@ -124,3 +127,69 @@ class BM25Index:
         return [
             ScoredChunk(chunk=self._chunks[position], score=score) for position, score in ranked
         ]
+
+
+class SparseBM25:
+    """The same BM25 scoring as BM25Index, vectorised over a sparse term matrix.
+
+    Each chunk's BM25 weight for each of its terms is computed once, at index time, into a sparse
+    chunk-by-term matrix. A query then only adds up the matrix columns of its terms, in query
+    order, which makes it orders of magnitude faster than the reference while producing the same
+    scores. tests/test_retrieval.py proves the two agree, ties included.
+    """
+
+    def __init__(self, chunks: Sequence[Chunk], *, k1: float, b: float, stem: bool = False) -> None:
+        """Index chunks for BM25 scoring.
+
+        Raises:
+            ValueError: If a parameter is out of range or the chunks contain no tokens.
+        """
+        if k1 < 0:
+            raise ValueError(f"k1 must be at least 0, got {k1}")
+        if not 0 <= b <= 1:
+            raise ValueError(f"b must be between 0 and 1, got {b}")
+        self._stem = stem
+        self._vocabulary: dict[str, int] = {}
+        rows: list[int] = []
+        columns: list[int] = []
+        frequencies: list[int] = []
+        lengths = np.zeros(len(chunks), dtype=np.float64)
+        for position, chunk in enumerate(chunks):
+            counts = Counter(tokenize(chunk.text, stem=stem))
+            lengths[position] = counts.total()
+            for term, frequency in counts.items():
+                rows.append(position)
+                columns.append(self._vocabulary.setdefault(term, len(self._vocabulary)))
+                frequencies.append(frequency)
+        total_tokens = float(lengths.sum())
+        if total_tokens == 0:
+            raise ValueError("BM25 needs at least one token across the indexed chunks")
+
+        count = len(chunks)
+        # The same expressions, in the same order of operations, as BM25Index, so the floating
+        # point results agree.
+        normalisers = k1 * (1 - b + b * lengths / (total_tokens / count))
+        column_array = np.asarray(columns, dtype=np.int64)
+        row_array = np.asarray(rows, dtype=np.int64)
+        document_frequency = np.bincount(column_array, minlength=len(self._vocabulary))
+        idf = np.log(1 + (count - document_frequency + 0.5) / (document_frequency + 0.5))
+        tf = np.asarray(frequencies, dtype=np.float64)
+        weights = idf[column_array] * tf * (k1 + 1) / (tf + normalisers[row_array])
+        matrix = sparse.csc_matrix(
+            (weights, (row_array, column_array)), shape=(count, len(self._vocabulary))
+        )
+        self._indptr = matrix.indptr
+        self._indices = matrix.indices
+        self._data = matrix.data
+        self._count = count
+
+    def scores(self, query: str) -> NDArray[np.float64]:
+        """Return every chunk's BM25 score for the query; chunks sharing no term score 0."""
+        scores = np.zeros(self._count, dtype=np.float64)
+        for term in tokenize(query, stem=self._stem):
+            column = self._vocabulary.get(term)
+            if column is None:
+                continue
+            start, end = self._indptr[column], self._indptr[column + 1]
+            scores[self._indices[start:end]] += self._data[start:end]
+        return scores
