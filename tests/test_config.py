@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -220,7 +221,11 @@ class TestLoadsValidConfig:
         ids=lambda p: p.relative_to(CONFIGS_DIR).as_posix(),
     )
     def test_committed_configs_are_valid(self, path: Path) -> None:
-        load_config(path)
+        # A stage-two config names the setups to answer and the judge; everything else defines
+        # one experiment.
+        with path.open("rb") as handle:
+            is_stage_two = "judge" in tomllib.load(handle)
+        (load_stage_two_config if is_stage_two else load_config)(path)
 
 
 class TestConfigDigest:
