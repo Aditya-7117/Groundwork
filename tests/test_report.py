@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from groundwork.config import load_stage_two_config
 from groundwork.report import (
     ReportError,
     human_agreement,
@@ -12,6 +13,8 @@ from groundwork.report import (
     markdown,
     retrieval_table,
     significance,
+    stage_two_config_text,
+    stage_two_setups,
 )
 from runs import write_run
 
@@ -90,3 +93,38 @@ def test_agreement_with_the_hand_labels(tmp_path: Path) -> None:
     nli = result["nli"]
     assert isinstance(nli, dict)
     assert nli["auc"] == pytest.approx(1.0)
+
+
+def test_stage_two_takes_the_baseline_the_weakest_and_the_top_three() -> None:
+    rows = [
+        {"setup": name, "passage.ndcg@10": value}
+        for name, value in [
+            ("fixed-bm25", 0.32),
+            ("sentence-bm25", 0.30),
+            ("a", 0.50),
+            ("b", 0.48),
+            ("c", 0.45),
+            ("d", 0.40),
+        ]
+    ]
+    assert stage_two_setups(rows) == ("fixed-bm25", "sentence-bm25", "a", "b", "c")
+
+
+def test_the_weak_reference_is_never_the_baseline() -> None:
+    rows = [
+        {"setup": "fixed-bm25", "passage.ndcg@10": 0.10},
+        {"setup": "x", "passage.ndcg@10": 0.20},
+        {"setup": "y", "passage.ndcg@10": 0.30},
+    ]
+    assert stage_two_setups(rows, top=1) == ("fixed-bm25", "x", "y")
+
+
+def test_the_stage_two_config_loads_and_records_the_rule(tmp_path: Path) -> None:
+    chosen = ("fixed-bm25", "sentence-bm25", "a", "b", "c")
+    scores = dict.fromkeys(chosen, 0.5)
+    path = tmp_path / "stage2.toml"
+    path.write_text(stage_two_config_text(chosen, scores, "d" * 40), encoding="utf-8")
+    config = load_stage_two_config(path)
+    assert config.setups == chosen
+    assert (config.judge.model, config.judge.thinking) == ("gpt-6-luna", "high")
+    assert "decision 62" in path.read_text(encoding="utf-8")

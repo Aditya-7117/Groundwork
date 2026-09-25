@@ -35,6 +35,9 @@ TABLE_COLUMNS = (
     "page.recall@10",
 )
 
+BASELINE = "fixed-bm25"
+"""The keyword baseline every setup is compared with."""
+
 type Document = dict[str, object]
 
 
@@ -86,6 +89,61 @@ def retrieval_table(runs: Mapping[str, Document]) -> list[dict[str, object]]:
             }
         )
     return sorted(rows, key=lambda row: (-float(str(row[PRIMARY])), str(row["setup"])))
+
+
+def stage_two_setups(rows: Sequence[Mapping[str, object]], *, top: int = 3) -> tuple[str, ...]:
+    """Pick the stage-two setups by the rule fixed before the grid ran (decision 62).
+
+    The BM25 baseline, the lowest-scoring other setup as the weak reference, and the top three by
+    the primary metric, in that order and without repeats.
+
+    Raises:
+        ReportError: If the baseline is missing from the rows.
+    """
+    ranked = sorted(rows, key=lambda row: (-float(str(row[PRIMARY])), str(row["setup"])))
+    names = [str(row["setup"]) for row in ranked]
+    if BASELINE not in names:
+        raise ReportError(f"the baseline {BASELINE} has no run")
+    weakest = next(name for name in reversed(names) if name != BASELINE)
+    chosen = [BASELINE, weakest]
+    for name in names:
+        if len(chosen) == top + 2:
+            break
+        if name not in chosen:
+            chosen.append(name)
+    return tuple(chosen)
+
+
+def run_commit(runs: Mapping[str, Document]) -> str:
+    """The commit the runs were made from (load_runs guarantees there is only one)."""
+    return str(_get(next(iter(runs.values())), "code", "git_commit"))
+
+
+def stage_two_config_text(chosen: Sequence[str], scores: Mapping[str, float], commit: str) -> str:
+    """The stage-two config for the chosen setups, with the rule and the scores that chose them."""
+    listed = ", ".join(f"{name} {scores[name]:.3f}" for name in chosen)
+    return "\n".join(
+        [
+            f"# Written by `groundwork stage-two-config` from the runs of commit {commit[:12]}.",
+            "# The setups follow the rule fixed before the grid ran (decision 62): the BM25",
+            "# baseline, the lowest-scoring other setup, and the top three by passage nDCG@10.",
+            f"# nDCG@10: {listed}.",
+            "",
+            'name = "stage-two"',
+            'description = "Answers and judgements for the baseline, the weak reference and the '
+            'top three setups."',
+            "seed = 1",
+            "questions = 1000",
+            "passages = 5",
+            'writer = "qwen3.8-27b-iq4xs"',
+            "setups = [" + ", ".join(f'"{name}"' for name in chosen) + "]",
+            "",
+            "[judge]",
+            'model = "gpt-6-luna"',
+            'thinking = "high"',
+            "",
+        ]
+    )
 
 
 def significance(runs: Mapping[str, Document], *, seed: int) -> dict[str, object]:

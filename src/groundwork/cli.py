@@ -3,6 +3,7 @@
     groundwork build-corpus         download the dataset and build the evaluation corpus
     groundwork grid                 write the config file of every setup in the grid
     groundwork run CONFIG [...]     run experiments and write one results artefact each
+    groundwork stage-two-config     choose the stage-two setups from the grid results, by rule
     groundwork answer CONFIG        write answers from chosen setups' latest retrieval runs
     groundwork judge ANSWERS_DIR    score answers by the judge, NLI, word overlap and containment
     groundwork label ANSWERS_DIR    label a blind sample of answers by hand
@@ -70,7 +71,17 @@ from groundwork.judging import Judge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
-from groundwork.report import ReportError, build_report, markdown
+from groundwork.report import (
+    PRIMARY,
+    ReportError,
+    build_report,
+    load_runs,
+    markdown,
+    retrieval_table,
+    run_commit,
+    stage_two_config_text,
+    stage_two_setups,
+)
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
 from groundwork.serve import build_live_setup, create_app
@@ -132,6 +143,7 @@ def main(
                 cache_dir=data_dir / "embeddings", weights_dir=data_dir / "huggingface" / "hub"
             ),
         ),
+        "stage-two-config": lambda: _stage_two_config(arguments.results_dir, arguments.out),
         "answer": lambda: _answer(arguments.config, data_dir, arguments.results_dir, now=clock),
         "judge": lambda: _judge(
             arguments.answers,
@@ -245,6 +257,18 @@ def _run(
             if name.startswith("passage.") and name.endswith("@10")
         }
         logger.info("run complete", extra={"artefact": str(directory), **headline})
+    return 0
+
+
+def _stage_two_config(results_dir: Path, out: Path) -> int:
+    """Write the stage-two config, its setups chosen from the grid by the fixed rule."""
+    runs = load_runs(results_dir, [setup.name for setup in grid()])
+    rows = retrieval_table(runs)
+    chosen = stage_two_setups(rows)
+    scores = {str(row["setup"]): float(str(row[PRIMARY])) for row in rows}
+    out.write_text(stage_two_config_text(chosen, scores, run_commit(runs)), encoding="utf-8")
+    load_stage_two_config(out)
+    logger.info("stage-two config written", extra={"path": str(out), "setups": list(chosen)})
     return 0
 
 
@@ -538,6 +562,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
+    )
+    stage_two = commands.add_parser(
+        "stage-two-config", help="choose the stage-two setups from the grid results, by rule"
+    )
+    stage_two.add_argument("--results-dir", type=Path, default=Path("results"), help="runs")
+    stage_two.add_argument(
+        "--out", type=Path, default=Path("configs/stage2.toml"), help="output file"
     )
     answer = commands.add_parser(
         "answer", help="write answers from chosen setups' latest retrieval runs"
