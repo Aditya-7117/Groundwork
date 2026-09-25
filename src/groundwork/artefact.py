@@ -311,6 +311,7 @@ class TimingRecord:
         writer_digest: Digest of the exact writer weights.
         started_at: UTC start, after the warm-up call.
         finished_at: UTC finish.
+        code: The code version, taken when the run started.
     """
 
     config: StageTwoConfig
@@ -319,6 +320,7 @@ class TimingRecord:
     writer_digest: str
     started_at: datetime
     finished_at: datetime
+    code: CodeVersion
 
 
 def write_timing_artefact(record: TimingRecord, results_dir: Path) -> Path:
@@ -336,7 +338,7 @@ def write_timing_artefact(record: TimingRecord, results_dir: Path) -> Path:
             "uncached calls in one session, after one unrecorded warm-up call"
         ),
         "writer": {"model": config.writer, "digest": record.writer_digest},
-        "code": asdict(current_code_version()),
+        "code": asdict(record.code),
         "environment": describe_environment(),
         "timing": {
             "started_at": record.started_at.isoformat(),

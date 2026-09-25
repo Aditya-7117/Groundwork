@@ -326,6 +326,7 @@ def _answer(config_path: Path, data_dir: Path, results_dir: Path, *, now: Now) -
 
 def _retime(answers_dir: Path, data_dir: Path, results_dir: Path, *, sample: int, now: Now) -> int:
     """Re-send a fixed sample of each setup's prompts as real calls and record their latency."""
+    code = current_code_version()
     document = json.loads((answers_dir / "result.json").read_text(encoding="utf-8"))
     config = StageTwoConfig.model_validate(document["experiment"]["config"])
     answers = load_answers(answers_dir / "answers.jsonl")
@@ -349,6 +350,7 @@ def _retime(answers_dir: Path, data_dir: Path, results_dir: Path, *, sample: int
             writer_digest=writer.digest,
             started_at=started_at,
             finished_at=now(),
+            code=code,
         ),
         results_dir,
     )
@@ -383,6 +385,7 @@ def _judge(
 
     The answers directory is never modified; the verdicts point back to it.
     """
+    code = current_code_version()
     document = json.loads((answers_dir / "result.json").read_text(encoding="utf-8"))
     config = StageTwoConfig.model_validate(document["experiment"]["config"])
     answers = load_answers(answers_dir / "answers.jsonl")
@@ -409,7 +412,7 @@ def _judge(
             nli_device=checker.device,
             started_at=started_at,
             finished_at=now(),
-            code=current_code_version(),
+            code=code,
             environment=describe_environment(),
         ),
         results_dir,

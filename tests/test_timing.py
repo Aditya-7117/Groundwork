@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from groundwork.answering import Answer
-from groundwork.artefact import TimingRecord, write_timing_artefact
+from groundwork.artefact import CodeVersion, TimingRecord, write_timing_artefact
 from groundwork.config import StageTwoConfig
 from groundwork.generation import Generation
 from groundwork.timing import retime, summarise_timings, timing_sample
@@ -105,6 +105,7 @@ def test_the_timing_artefact_records_the_method_and_summary(tmp_path: Path) -> N
             writer_digest="8a45235b15fb",
             started_at=now,
             finished_at=now,
+            code=CodeVersion(package_version="0.1.0", git_commit="e" * 40, git_dirty=False),
         ),
         tmp_path,
     )
@@ -113,3 +114,4 @@ def test_the_timing_artefact_records_the_method_and_summary(tmp_path: Path) -> N
     assert "uncached" in document["method"]
     assert document["setups"]["a"]["p50_seconds"] == pytest.approx(3.0)
     assert document["setups"]["b"]["text_mismatches"] == 0
+    assert document["code"]["git_commit"] == "e" * 40
