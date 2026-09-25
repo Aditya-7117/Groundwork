@@ -1,0 +1,16 @@
+# Written by `groundwork stage-two-config` from the runs of commit 199dd2a7eba1.
+# The setups follow the rule fixed before the grid ran (decision 62): the BM25
+# baseline, the lowest-scoring other setup, and the top three by passage nDCG@10.
+# nDCG@10: fixed-bm25 0.321, sentence-bm25 0.300, fixed-qwen3-rerank 0.696, fixed-hybrid-qwen3-rerank 0.694, section-hybrid-qwen3-rerank 0.690.
+
+name = "stage-two"
+description = "Answers and judgements for the baseline, the weak reference and the top three setups."
+seed = 1
+questions = 1000
+passages = 5
+writer = "qwen3.8-27b-iq4xs"
+setups = ["fixed-bm25", "sentence-bm25", "fixed-qwen3-rerank", "fixed-hybrid-qwen3-rerank", "section-hybrid-qwen3-rerank"]
+
+[judge]
+model = "gpt-6-luna"
+thinking = "high"
