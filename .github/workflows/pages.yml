@@ -1,0 +1,68 @@
+name: Explorer site
+
+# Publishes the explorer to GitHub Pages for one tagged release. The release carries the site data
+# written by `groundwork site` (site-data.tar.gz); this builds the explorer at that tag and serves
+# it with that data, so the public site always matches a release's artefacts. Run by hand only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag whose code and site data to publish
+        required: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the explorer with the release's data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: src/explorer/package-lock.json
+
+      - name: Build
+        working-directory: src/explorer
+        run: |
+          npm ci
+          npm run build
+
+      - name: Add the release's site data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          gh release download "$RELEASE" --pattern site-data.tar.gz --dir "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/site-data.tar.gz" -C src/explorer/dist
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: src/explorer/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
