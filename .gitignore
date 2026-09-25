@@ -1,15 +1,4 @@
-# Agent and editor config. Never published, never committed.
-CLAUDE.md
-BRIEF.md
-AGENTS.md
-.agents/
-GEMINI.md
-.claude/
-.cursor/
-.cursorrules
-.windsurf/
-.clinerules
-.aider*
+# Editor settings
 .vscode/
 .idea/
 
