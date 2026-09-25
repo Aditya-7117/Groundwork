@@ -66,7 +66,7 @@ from groundwork.experiment import LocalModels, ModelProvider, run_experiment
 from groundwork.gate import GateError, record_baseline, run_gate
 from groundwork.generation import GenerationError, OllamaWriter
 from groundwork.golden import build_golden
-from groundwork.grid import grid, write_grid
+from groundwork.grid import grid, write_grid, write_table_ablation
 from groundwork.judging import Judge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
@@ -132,7 +132,7 @@ def main(
     clock = now or _utc_now
     commands: dict[str, Callable[[], int]] = {
         "build-corpus": lambda: _build(data_dir),
-        "grid": lambda: _grid(arguments.out),
+        "grid": lambda: _grid(arguments.out, arguments.ablation),
         "run": lambda: _run(
             arguments.configs,
             data_dir,
@@ -187,8 +187,11 @@ class _Budget:
     workers: int
 
 
-def _grid(out: Path) -> int:
-    write_grid(out)
+def _grid(out: Path, ablation: str | None) -> int:
+    if ablation is None:
+        write_grid(out)
+    else:
+        write_table_ablation(ablation, out)
     return 0
 
 
@@ -559,6 +562,12 @@ def _parser() -> argparse.ArgumentParser:
     grid.add_argument(
         "--out", type=Path, default=Path("configs/grid"), help="output (default: configs/grid)"
     )
+    grid.add_argument(
+        "--ablation",
+        metavar="SETUP",
+        default=None,
+        help="instead, write the table ablation of this setup (use with --out configs/ablation)",
+    )
     run = commands.add_parser("run", help="run experiments and write one results artefact each")
     run.add_argument(
         "configs", type=Path, nargs="+", help="experiment config files, e.g. configs/grid/*.toml"
@@ -566,6 +575,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
     )
+    _add_stage_two_commands(commands)
+    _add_output_commands(commands)
+    return parser
+
+
+type _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
+
+
+def _add_stage_two_commands(commands: _Commands) -> None:
+    """Commands that write, time, judge and label stage-two answers."""
     stage_two = commands.add_parser(
         "stage-two-config", help="choose the stage-two setups from the grid results, by rule"
     )
@@ -594,6 +613,10 @@ def _parser() -> argparse.ArgumentParser:
     judge.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
     )
+
+
+def _add_output_commands(commands: _Commands) -> None:
+    """Commands that turn results into the report, the explorer and the regression gate."""
     report = commands.add_parser("report", help="assemble every published number")
     report.add_argument("--verdicts", type=Path, default=None, help="a stage-two verdicts run")
     report.add_argument("--labels", type=Path, default=None, help="the hand labels file")
@@ -651,7 +674,6 @@ def _parser() -> argparse.ArgumentParser:
     label.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"
     )
-    return parser
 
 
 def _utc_now() -> datetime:

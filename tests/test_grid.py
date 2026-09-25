@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from groundwork.config import load_config
-from groundwork.grid import Setup, grid, render, write_grid
+from groundwork.grid import Setup, grid, render, write_grid, write_table_ablation
 
 GRID_DIR = Path(__file__).resolve().parents[1] / "configs" / "grid"
 
@@ -104,3 +104,21 @@ def test_writing_the_grid_removes_configs_no_longer_in_it(tmp_path: Path) -> Non
 def test_unknown_parts_are_rejected(setup: Setup) -> None:
     with pytest.raises(ValueError, match="unknown"):
         render(setup)
+
+
+def test_the_table_ablation_of_a_grid_setup_differs_only_in_its_tables(tmp_path: Path) -> None:
+    path = write_table_ablation("fixed-qwen3-rerank", tmp_path)
+    ablation = load_config(path)
+    original = tmp_path / "original.toml"
+    original.write_text(render(Setup(chunker="fixed", retriever="qwen3", rerank=True)), "utf-8")
+    base = load_config(original)
+    assert ablation.name == "fixed-qwen3-rerank-flat-tables"
+    assert ablation.chunking.flatten_tables is True
+    assert ablation.retrieval == base.retrieval
+    assert ablation.rerank == base.rerank
+    assert ablation.chunking.size == base.chunking.size
+
+
+def test_an_ablation_of_an_unknown_setup_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no grid setup is named 'nope'"):
+        write_table_ablation("nope", tmp_path)

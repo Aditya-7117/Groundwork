@@ -149,6 +149,33 @@ def write_grid(directory: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def table_ablation(name: str) -> Setup:
+    """The grid setup with this name, with its tables flattened into loose text (decision 40).
+
+    Raises:
+        ValueError: If no grid setup has this name.
+    """
+    for setup in grid():
+        if setup.name == name:
+            return Setup(
+                chunker=setup.chunker,
+                retriever=setup.retriever,
+                rerank=setup.rerank,
+                flatten_tables=True,
+            )
+    raise ValueError(f"no grid setup is named {name!r}")
+
+
+def write_table_ablation(name: str, directory: Path) -> Path:
+    """Write the table ablation's config for a grid setup and return its path."""
+    setup = table_ablation(name)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{setup.name}.toml"
+    path.write_text(render(setup), encoding="utf-8")
+    logger.info("table ablation written", extra={"path": str(path)})
+    return path
+
+
 def _retrieval(retriever: str) -> tuple[str, str | None]:
     if retriever == "bm25":
         return "bm25", None
