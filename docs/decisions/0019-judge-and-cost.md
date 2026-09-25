@@ -24,9 +24,9 @@ day for this model, and about 8,500 judgements are needed.
   ($0.75 per million input tokens, $3.75 per million output tokens, thinking billed as output).
   The real cost is projected after 50 calls, and the run stops if it heads more than half again
   over the approved budget.
-- Rejected: an interactive coding agent or IDE chat agent as the judge. Its requests cannot be
-  pinned, recorded or replayed, it has seen the reference answers, and it cannot be called at
-  scale.
+- Rejected: judging through an interactive chat interface instead of an API. Its requests cannot
+  be pinned, recorded or replayed, a chat that can see the project files would also see the
+  reference answers, and it cannot be called eight thousand times reliably.
 
 ## Consequences
 
