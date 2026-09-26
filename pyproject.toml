@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.13.5",
     "scipy>=1.18.1",
     "sentence-transformers>=6.1.0",
+    "torch>=2.14.0",
     "uvicorn>=0.53.0",
 ]
 
@@ -120,3 +121,13 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
 empty_parameter_set_mark = "fail_at_collect"
 filterwarnings = ["error"]
+
+# Linux installs (CI and the container) take PyTorch's CPU-only build: neither has a GPU, and the
+# standard Linux build bundles several gigabytes of NVIDIA libraries. macOS is unaffected.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
