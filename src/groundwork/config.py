@@ -246,6 +246,8 @@ class StageTwoConfig(_Section):
         writer: Ollama model that writes the answers.
         setups: Grid setup names, whose latest retrieval runs are answered.
         judge: The judge's model and thinking level.
+        answer_types: Keep only these answer types from the sample, for a follow-up run on the
+            same questions as the main one (decision 80); unset keeps every type.
     """
 
     name: str
@@ -256,8 +258,9 @@ class StageTwoConfig(_Section):
     writer: str
     setups: tuple[str, ...]
     judge: JudgeConfig
+    answer_types: tuple[Literal["paragraph", "table", "list"], ...] | None = None
 
-    @field_validator("setups", mode="before")
+    @field_validator("setups", "answer_types", mode="before")
     @classmethod
     def _toml_array_as_tuple(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value

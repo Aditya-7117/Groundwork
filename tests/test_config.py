@@ -268,6 +268,14 @@ class TestStageTwoConfig:
         config = load_stage_two_config(path)
         assert config.setups == ("fixed-bm25", "sentence-bm25")
         assert config.judge.thinking == "high"
+        assert config.answer_types is None
+
+    def test_a_run_can_keep_only_some_answer_types(self, tmp_path: Path) -> None:
+        path = tmp_path / "stage2.toml"
+        path.write_text(
+            STAGE_TWO.replace("seed = 1", 'seed = 1\nanswer_types = ["table"]'), "utf-8"
+        )
+        assert load_stage_two_config(path).answer_types == ("table",)
 
     @pytest.mark.parametrize(
         ("old", "new", "message"),
@@ -277,6 +285,7 @@ class TestStageTwoConfig:
             ('["fixed-bm25", "sentence-bm25"]', "[]", "at least one setup"),
             ('"sentence-bm25"]', '"../escape"]', "must be lowercase letters"),
             ("questions = 1000", "questions = 0", r"\[questions\]"),
+            ("seed = 1", 'seed = 1\nanswer_types = ["chart"]', r"\[answer_types\.0\]"),
         ],
     )
     def test_rejects_invalid_values(self, tmp_path: Path, old: str, new: str, message: str) -> None:

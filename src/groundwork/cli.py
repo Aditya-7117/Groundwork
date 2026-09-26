@@ -287,6 +287,9 @@ def _answer(config_path: Path, data_dir: Path, results_dir: Path, *, now: Now) -
     started_at = now()
     evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
     questions = stratified_sample(evaluation_set.questions, config.questions, seed=config.seed)
+    if config.answer_types is not None:
+        # Filtered after sampling, so these are the same questions as in the main run.
+        questions = tuple(q for q in questions if q.answer_type in config.answer_types)
     writer = OllamaWriter(
         model=config.writer,
         cache=ResponseCache(data_dir / "cache" / "answers.jsonl"),
