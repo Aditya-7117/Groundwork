@@ -18,7 +18,7 @@
         "passage.recall@10": 0.7358162449098313,
         "passage.ndcg@10": 0.472462879365889
       },
-      "tolerance_basis": "Fresh CPU encodes on the development machine were bit-identical (measured 24 Sep 2026). Other processors can round the last bits differently and swap near-tied chunks; that difference is measured on the first CI run and the tolerance set from it."
+      "tolerance_basis": "Fresh CPU encodes on the development machine (Apple M5 Pro) were bit-identical (measured 24 Sep 2026), and GitHub's Linux x86 runner reproduced both metrics exactly on the first CI run (26 Sep 2026, run 36231718301), so any drop is a change."
     }
   }
 }
