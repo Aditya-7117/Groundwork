@@ -15,12 +15,18 @@ judge's groundedness labels held up against 200 blind hand labels: it gave the s
 them (Cohen's kappa 0.53) and flagged every answer the hand labels flagged, where the cheaper NLI
 check caught two in six.
 
+**Explore it:** the [results explorer](https://aditya-7117.github.io/Groundwork/) opens every setup
+down to single questions, and
+[release v1.0.0](https://github.com/Aditya-7117/Groundwork/releases/tag/v1.0.0) holds every run
+artefact behind the numbers here.
+
 ## Results
 
 All numbers: passage level (a passage counts only if it holds the human-marked answer), all
 3,220 questions, seed 1, every run from commit 199dd2a, Apple M5 Pro with 24 GB. Page recall@10 is
 the share of questions whose answer page appears in the top ten. Every number is in a run artefact
-under `results/`.
+under `results/`; `groundwork-results-v1.0.0.tar.gz` in the release unpacks to that directory at the
+repository root, holding exactly the runs published here.
 
 | Setup | Recall@10 | nDCG@10 | MRR@10 | Recall@100 | Page recall@10 |
 |---|---|---|---|---|---|
