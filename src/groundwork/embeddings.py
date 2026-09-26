@@ -223,13 +223,28 @@ class VectorStore:
         return out, charged
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VectorCache:
+    """Where chunk vectors are kept, which computation they come from, and whether to add to them.
+
+    Attributes:
+        directory: The cache's root directory.
+        precision: The numeric precision the vectors were computed in; part of the cache key.
+        encode_missing: Encode any chunk without a vector. Live search turns this off: it reads
+            the vectors the evaluation computed and fails rather than encode on a slow machine.
+    """
+
+    directory: Path
+    precision: str
+    encode_missing: bool = True
+
+
 def chunk_embeddings(
     chunks: Sequence[Chunk],
     model: EmbeddingModel,
     encoder: Encoder,
     *,
-    cache_dir: Path,
-    precision: str,
+    cache: VectorCache,
 ) -> tuple[NDArray[np.float16], float]:
     """Return one vector per chunk, encoding only texts the cache lacks, and the encoding cost.
 
@@ -239,13 +254,15 @@ def chunk_embeddings(
     embedding this corpus actually costs.
 
     Raises:
-        EmbeddingError: If a cached shard is damaged or the encoder returns the wrong shape.
+        EmbeddingError: If a cached shard is damaged, the encoder returns the wrong shape, or
+            vectors are missing and the cache may not encode them.
     """
+    precision = cache.precision
     identity = hashlib.sha256()
     for part in (model.name, model.revision, precision):
         identity.update(part.encode("utf-8"))
         identity.update(b"\0")
-    directory = cache_dir / f"{model.key}-{identity.hexdigest()[:16]}"
+    directory = cache.directory / f"{model.key}-{identity.hexdigest()[:16]}"
     store = VectorStore(directory, model.dimensions)
     (directory / "meta.json").write_text(
         json.dumps(
@@ -261,6 +278,11 @@ def chunk_embeddings(
         if key not in store and key not in todo:
             todo[key] = chunk.text
     pending = list(todo.items())
+    if pending and not cache.encode_missing:
+        raise EmbeddingError(
+            f"{len(pending)} chunks have no {precision} vector from {model.name} in {directory}; "
+            "run the setup's evaluation first"
+        )
     started = time.perf_counter()
     for first in range(0, len(pending), _SHARD_SIZE):
         batch = pending[first : first + _SHARD_SIZE]

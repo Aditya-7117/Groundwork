@@ -486,6 +486,7 @@ def _serve(arguments: argparse.Namespace, data_dir: Path) -> int:
         cache_dir=data_dir / "embeddings",
         weights_dir=data_dir / "huggingface" / "hub",
         device=arguments.device,
+        stored_vectors=arguments.stored_vectors,
     )
     live = {config.name: build_live_setup(config, evaluation_set, models) for config in configs}
     uvicorn.run(
@@ -657,6 +658,11 @@ def _add_output_commands(commands: _Commands) -> None:
     serve.add_argument("--port", type=int, default=8000, help="port (default: 8000)")
     serve.add_argument(
         "--device", choices=["cpu", "mps"], default=None, help="where models run (default: best)"
+    )
+    serve.add_argument(
+        "--stored-vectors",
+        default="float16",
+        help="precision of the evaluation's chunk vectors to read; never encodes chunks",
     )
     golden = commands.add_parser("golden", help="write the golden slice for the regression gate")
     golden.add_argument(

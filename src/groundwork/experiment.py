@@ -30,6 +30,7 @@ from groundwork.embeddings import (
     EmbeddingModel,
     Encoder,
     SentenceTransformerEncoder,
+    VectorCache,
     chunk_embeddings,
     get_model,
 )
@@ -68,9 +69,8 @@ _METRICS = (
 class ModelProvider(Protocol):
     """Where the neural models come from. Tests pass small fakes; real runs load the weights."""
 
-    @property
-    def cache_dir(self) -> Path:
-        """Where chunk vectors are cached."""
+    def vector_cache(self, encoder: Encoder) -> VectorCache:
+        """Where an encoder's chunk vectors are cached, and whether missing ones may be encoded."""
         ...
 
     def encoder(self, model: EmbeddingModel) -> Encoder:
@@ -85,18 +85,37 @@ class ModelProvider(Protocol):
 class LocalModels:
     """Real models, loaded on first use and kept for the rest of the process."""
 
-    def __init__(self, *, cache_dir: Path, weights_dir: Path, device: str | None = None) -> None:
-        """Remember where vectors and weights are cached, and where models run (None: best)."""
+    def __init__(
+        self,
+        *,
+        cache_dir: Path,
+        weights_dir: Path,
+        device: str | None = None,
+        stored_vectors: str | None = None,
+    ) -> None:
+        """Remember where vectors and weights are cached, and where models run (None: best).
+
+        Args:
+            cache_dir: Where chunk vectors are cached.
+            weights_dir: Where model weights are cached.
+            device: Where models run; None picks the Apple GPU when there is one.
+            stored_vectors: Read chunk vectors computed in this precision, and never encode
+                chunks: for live search, whose machine can be far slower than the evaluation's.
+        """
         self._cache_dir = cache_dir
         self._weights_dir = weights_dir
         self._device = device
+        self._stored_vectors = stored_vectors
         self._encoders: dict[str, Encoder] = {}
         self._scorers: dict[str, ReusingScorer] = {}
 
-    @property
-    def cache_dir(self) -> Path:
-        """Where chunk vectors are cached."""
-        return self._cache_dir
+    def vector_cache(self, encoder: Encoder) -> VectorCache:
+        """The evaluation's own vectors when live, otherwise this encoder's, encoding as needed."""
+        if self._stored_vectors is not None:
+            return VectorCache(
+                directory=self._cache_dir, precision=self._stored_vectors, encode_missing=False
+            )
+        return VectorCache(directory=self._cache_dir, precision=encoder.precision)
 
     def encoder(self, model: EmbeddingModel) -> Encoder:
         """Load an embedding model once."""
@@ -330,7 +349,7 @@ def build_first_stage(
         embedding = get_model(retrieval.dense.model)
         encoder = models.encoder(embedding)
         vectors, stage_seconds["embedding"] = chunk_embeddings(
-            chunks, embedding, encoder, cache_dir=models.cache_dir, precision=encoder.precision
+            chunks, embedding, encoder, cache=models.vector_cache(encoder)
         )
         dense = DenseIndex(vectors, embedding, encoder)
         record["embedding"] = {

@@ -20,6 +20,7 @@ from groundwork.chunking import Chunk
 from groundwork.embeddings import (
     DenseIndex,
     EmbeddingError,
+    VectorCache,
     chunk_embeddings,
     get_model,
 )
@@ -60,11 +61,17 @@ class TestChunkEmbeddings:
     def test_vectors_are_computed_once_then_read_from_the_cache(self, tmp_path: Path) -> None:
         first_encoder = HashingEncoder(MINILM.dimensions)
         first, first_seconds = chunk_embeddings(
-            CHUNKS, MINILM, first_encoder, cache_dir=tmp_path, precision="float32"
+            CHUNKS,
+            MINILM,
+            first_encoder,
+            cache=VectorCache(directory=tmp_path, precision="float32"),
         )
         second_encoder = HashingEncoder(MINILM.dimensions)
         second, second_seconds = chunk_embeddings(
-            CHUNKS, MINILM, second_encoder, cache_dir=tmp_path, precision="float32"
+            CHUNKS,
+            MINILM,
+            second_encoder,
+            cache=VectorCache(directory=tmp_path, precision="float32"),
         )
         assert first_encoder.calls
         assert not second_encoder.calls
@@ -77,18 +84,25 @@ class TestChunkEmbeddings:
 
     def test_only_a_changed_chunk_text_is_encoded(self, tmp_path: Path) -> None:
         chunk_embeddings(
-            CHUNKS, MINILM, HashingEncoder(MINILM.dimensions), cache_dir=tmp_path, precision="f"
+            CHUNKS,
+            MINILM,
+            HashingEncoder(MINILM.dimensions),
+            cache=VectorCache(directory=tmp_path, precision="f"),
         )
         changed = [*CHUNKS[:-1], chunk(4, "the shortest river")]
         encoder = HashingEncoder(MINILM.dimensions)
-        chunk_embeddings(changed, MINILM, encoder, cache_dir=tmp_path, precision="f")
+        chunk_embeddings(
+            changed, MINILM, encoder, cache=VectorCache(directory=tmp_path, precision="f")
+        )
         assert encoder.calls == [["the shortest river"]]
 
     def test_identical_text_is_encoded_once_and_charged_per_chunk(self, tmp_path: Path) -> None:
         # Another chunker producing the same text, such as a table chunk, reuses its vector.
         twice = [chunk(0, "black tea"), chunk(1, "black tea")]
         encoder = HashingEncoder(MINILM.dimensions)
-        vectors, _ = chunk_embeddings(twice, MINILM, encoder, cache_dir=tmp_path, precision="f")
+        vectors, _ = chunk_embeddings(
+            twice, MINILM, encoder, cache=VectorCache(directory=tmp_path, precision="f")
+        )
         assert encoder.calls == [["black tea"]]
         np.testing.assert_array_equal(vectors[0], vectors[1])
 
@@ -102,8 +116,7 @@ class TestChunkEmbeddings:
             CHUNKS[:2],
             MINILM,
             HashingEncoder(MINILM.dimensions),
-            cache_dir=tmp_path,
-            precision="f",
+            cache=VectorCache(directory=tmp_path, precision="f"),
         )
         # One shard of two texts took 104 - 100 = 4 seconds: 2 seconds per chunk, 4 in all.
         assert seconds == pytest.approx(4.0)
@@ -111,17 +124,21 @@ class TestChunkEmbeddings:
             [CHUNKS[0]],
             MINILM,
             HashingEncoder(MINILM.dimensions),
-            cache_dir=tmp_path,
-            precision="f",
+            cache=VectorCache(directory=tmp_path, precision="f"),
         )
         assert reused == pytest.approx(2.0)
 
     def test_a_different_precision_is_encoded_afresh(self, tmp_path: Path) -> None:
         chunk_embeddings(
-            CHUNKS, MINILM, HashingEncoder(MINILM.dimensions), cache_dir=tmp_path, precision="a"
+            CHUNKS,
+            MINILM,
+            HashingEncoder(MINILM.dimensions),
+            cache=VectorCache(directory=tmp_path, precision="a"),
         )
         encoder = HashingEncoder(MINILM.dimensions)
-        chunk_embeddings(CHUNKS, MINILM, encoder, cache_dir=tmp_path, precision="b")
+        chunk_embeddings(
+            CHUNKS, MINILM, encoder, cache=VectorCache(directory=tmp_path, precision="b")
+        )
         assert encoder.calls
 
     def test_an_interrupted_run_resumes_from_its_last_finished_shard(
@@ -133,24 +150,27 @@ class TestChunkEmbeddings:
                 CHUNKS,
                 MINILM,
                 FailsAfter(MINILM.dimensions, batches=2),
-                cache_dir=tmp_path,
-                precision="f",
+                cache=VectorCache(directory=tmp_path, precision="f"),
             )
         resumed = HashingEncoder(MINILM.dimensions)
-        vectors, _ = chunk_embeddings(CHUNKS, MINILM, resumed, cache_dir=tmp_path, precision="f")
+        vectors, _ = chunk_embeddings(
+            CHUNKS, MINILM, resumed, cache=VectorCache(directory=tmp_path, precision="f")
+        )
         assert resumed.calls == [[CHUNKS[4].text]]
         fresh, _ = chunk_embeddings(
             CHUNKS,
             MINILM,
             HashingEncoder(MINILM.dimensions),
-            cache_dir=tmp_path / "fresh",
-            precision="f",
+            cache=VectorCache(directory=tmp_path / "fresh", precision="f"),
         )
         np.testing.assert_array_equal(vectors, fresh)
 
     def test_a_cached_shard_of_the_wrong_shape_is_rejected(self, tmp_path: Path) -> None:
         chunk_embeddings(
-            CHUNKS, MINILM, HashingEncoder(MINILM.dimensions), cache_dir=tmp_path, precision="f"
+            CHUNKS,
+            MINILM,
+            HashingEncoder(MINILM.dimensions),
+            cache=VectorCache(directory=tmp_path, precision="f"),
         )
         [shard] = tmp_path.glob("*/shard-0000.npy")
         np.save(shard, np.zeros((2, 3), dtype=np.float16))
@@ -159,22 +179,25 @@ class TestChunkEmbeddings:
                 CHUNKS,
                 MINILM,
                 HashingEncoder(MINILM.dimensions),
-                cache_dir=tmp_path,
-                precision="f",
+                cache=VectorCache(directory=tmp_path, precision="f"),
             )
 
 
 class TestDenseIndex:
     def test_the_chunk_sharing_the_most_words_scores_highest(self, tmp_path: Path) -> None:
         encoder = HashingEncoder(MINILM.dimensions)
-        vectors, _ = chunk_embeddings(CHUNKS, MINILM, encoder, cache_dir=tmp_path, precision="f")
+        vectors, _ = chunk_embeddings(
+            CHUNKS, MINILM, encoder, cache=VectorCache(directory=tmp_path, precision="f")
+        )
         scores = DenseIndex(vectors, MINILM, encoder).scores("which gas giant is jupiter")
         assert int(np.argmax(scores)) == 2
         assert scores.dtype == np.float64
 
     def test_scores_are_cosine_similarities(self, tmp_path: Path) -> None:
         encoder = HashingEncoder(MINILM.dimensions)
-        vectors, _ = chunk_embeddings(CHUNKS, MINILM, encoder, cache_dir=tmp_path, precision="f")
+        vectors, _ = chunk_embeddings(
+            CHUNKS, MINILM, encoder, cache=VectorCache(directory=tmp_path, precision="f")
+        )
         scores = DenseIndex(vectors, MINILM, encoder).scores("black tea")
         # Identical text gives similarity 1, up to the half-precision storage of chunk vectors.
         assert scores[3] == pytest.approx(1.0, abs=1e-3)
@@ -184,7 +207,9 @@ class TestDenseIndex:
         # Qwen3-Embedding is trained to see an instruction before each query, and not before
         # passages; leaving it out costs retrieval quality, per the model card.
         encoder = HashingEncoder(QWEN.dimensions)
-        vectors, _ = chunk_embeddings(CHUNKS, QWEN, encoder, cache_dir=tmp_path, precision="f")
+        vectors, _ = chunk_embeddings(
+            CHUNKS, QWEN, encoder, cache=VectorCache(directory=tmp_path, precision="f")
+        )
         DenseIndex(vectors, QWEN, encoder).scores("longest river")
         assert encoder.calls[0] == [c.text for c in CHUNKS]
         assert encoder.calls[-1] == [f"{QWEN.query_instruction}longest river"]
@@ -193,3 +218,18 @@ class TestDenseIndex:
 def test_an_unknown_model_names_the_known_ones() -> None:
     with pytest.raises(EmbeddingError, match=r"known: Qwen3-Embedding-0\.6B, all-MiniLM-L6-v2"):
         get_model("bert")
+
+
+def test_a_cache_that_may_not_encode_refuses_missing_vectors(tmp_path: Path) -> None:
+    # Live search reads the evaluation's vectors and must never start encoding a corpus.
+    encoder = HashingEncoder(MINILM.dimensions)
+    chunk_embeddings(
+        CHUNKS[:3], MINILM, encoder, cache=VectorCache(directory=tmp_path, precision="float16")
+    )
+    read_only = VectorCache(directory=tmp_path, precision="float16", encode_missing=False)
+    vectors, _ = chunk_embeddings(
+        CHUNKS[:3], MINILM, HashingEncoder(MINILM.dimensions), cache=read_only
+    )
+    assert vectors.shape == (3, MINILM.dimensions)
+    with pytest.raises(EmbeddingError, match="2 chunks have no float16 vector"):
+        chunk_embeddings(CHUNKS, MINILM, HashingEncoder(MINILM.dimensions), cache=read_only)

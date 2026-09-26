@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from groundwork.embeddings import EmbeddingModel
+from groundwork.embeddings import EmbeddingModel, Encoder, VectorCache
 from groundwork.rerank import RerankerModel
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -67,9 +67,8 @@ class FakeModels:
         self.encoders: dict[str, HashingEncoder] = {}
         self.reranker = WordCountScorer(rerank_word)
 
-    @property
-    def cache_dir(self) -> Path:
-        return self._cache_dir
+    def vector_cache(self, encoder: Encoder) -> VectorCache:
+        return VectorCache(directory=self._cache_dir, precision=encoder.precision)
 
     def encoder(self, model: EmbeddingModel) -> HashingEncoder:
         return self.encoders.setdefault(model.key, HashingEncoder(model.dimensions))
