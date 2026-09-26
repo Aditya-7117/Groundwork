@@ -11,6 +11,12 @@ import { GROUNDEDNESS_LABELS, fixed3, percent } from "@/lib/format"
 const interval = (low?: number, high?: number) =>
   low === undefined || high === undefined ? "" : `95% interval [${fixed3(low)}, ${fixed3(high)}]`
 
+/** Hand-label agreement carries its interval as two fields; the cards read the judge file's pair. */
+const asBaseline = (agreement: BaselineAgreement & Agreement): BaselineAgreement => ({
+  ...agreement,
+  kappa_interval: [agreement.kappa_low, agreement.kappa_high],
+})
+
 function BaselineCard({ label, agreement }: { label: string; agreement: BaselineAgreement | undefined }) {
   if (!agreement || agreement.undefined) {
     return <Kpi label={label} value="–" detail={agreement?.undefined ?? "not measured yet"} />
@@ -60,8 +66,8 @@ export function Judge({ report }: { report: Report }) {
               : "Hand labels not yet made"
           }
         />
-        <BaselineCard label="NLI against hand labels" agreement={human?.nli} />
-        <BaselineCard label="Word overlap against hand labels" agreement={human?.lexical} />
+        <BaselineCard label="NLI against hand labels" agreement={human && asBaseline(human.nli)} />
+        <BaselineCard label="Word overlap against hand labels" agreement={human && asBaseline(human.lexical)} />
         <Kpi label="Judging cost" value={`$${report.stage_two.judge.spent.toFixed(2)}`} detail="At the dated list price in the verdicts artefact" />
       </div>
 
