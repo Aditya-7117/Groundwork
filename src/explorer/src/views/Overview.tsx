@@ -9,6 +9,20 @@ import { fixed3, pValue, percent, signed } from "@/lib/format"
 import { href } from "@/lib/route"
 
 export const BASELINE = "fixed-bm25"
+
+const ABLATION_ROWS: [string, string][] = [
+  ["answer_hit@10", "A top-10 passage contains a reference answer"],
+  ["answer_rr@10", "Rank of the first such passage (reciprocal rank)"],
+  ["span_hit@10", "A top-10 passage overlaps the answer's table (span measure)"],
+  ["span_rr@10", "Rank of the first overlapping passage (span measure)"],
+]
+
+const WRITER_ROWS: [string, string][] = [
+  ["correct_judge", "Written answer judged correct"],
+  ["correct_containment", "Written answer contains a reference"],
+  ["supported", "Written answer judged fully supported"],
+  ["declined", "Writer declined"],
+]
 const ALPHA = 0.05
 
 export function Significant({ row }: { row: Comparison }) {
@@ -145,6 +159,53 @@ export function Overview({ report }: { report: Report }) {
           </Table>
         </CardContent>
       </Card>
+
+
+      {report.table_ablation && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Did keeping table structure help?</CardTitle>
+            <CardDescription>
+              {winner} against the same setup with its tables flattened into loose text, on the{" "}
+              {report.table_ablation.questions} table questions. Paired randomisation tests; the first two
+              rows decide it, because they count the same way for both table layouts.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Measure</TableHead>
+                  <TableHead className="text-right">Flattened</TableHead>
+                  <TableHead className="text-right">Structured</TableHead>
+                  <TableHead className="text-right">Difference</TableHead>
+                  <TableHead className="text-right">95% interval</TableHead>
+                  <TableHead className="text-right">p</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[
+                  ...ABLATION_ROWS.map(([key, label]) => [label, report.table_ablation?.comparisons[key]?.[0]] as const),
+                  ...WRITER_ROWS.map(([key, label]) => [label, report.table_writer?.comparisons[key]?.[0]] as const),
+                ]
+                  .filter((entry): entry is readonly [string, Comparison] => entry[1] !== undefined)
+                  .map(([label, row]) => (
+                    <TableRow key={label}>
+                      <TableCell className="whitespace-normal">{label}</TableCell>
+                      <TableCell className="text-right tabular-nums">{fixed3(row.mean_a)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{fixed3(row.mean_b)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{signed(row.difference)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        [{signed(row.ci_low)}, {signed(row.ci_high)}]
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{pValue(row.p_value)}</TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {report.stage_two && (
         <Card>

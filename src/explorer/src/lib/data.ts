@@ -78,7 +78,8 @@ export interface Report {
   commit: string
   retrieval: RetrievalRow[]
   significance: { winner: string; winner_against_each: Family; reranker: Family }
-  table_ablation: { questions: number; comparisons: Family } | null
+  table_ablation?: { questions: number; primary: string[]; comparisons: Family; commit?: string } | null
+  table_writer?: { questions: number; comparisons: Family }
   stage_two?: {
     path: string
     setups: Record<string, StageTwoSummary>
