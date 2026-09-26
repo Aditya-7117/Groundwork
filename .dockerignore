@@ -1,0 +1,11 @@
+# Only the package, configs, lockfile and explorer source go into the image.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!src/groundwork/**
+!configs/**
+!src/explorer/**
+src/explorer/node_modules
+src/explorer/dist
+**/__pycache__
