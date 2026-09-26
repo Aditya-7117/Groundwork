@@ -1,13 +1,16 @@
 """The report, over small run artefacts written in the test."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from groundwork.config import load_stage_two_config
+from groundwork.evaluation import EvaluationSet
 from groundwork.report import (
     ReportError,
+    answer_text_ranks,
     human_agreement,
     load_runs,
     markdown,
@@ -15,8 +18,9 @@ from groundwork.report import (
     significance,
     stage_two_config_text,
     stage_two_setups,
+    table_writer,
 )
-from runs import write_run
+from runs import EVALUATION_SET, write_run
 
 
 @pytest.fixture
@@ -128,3 +132,73 @@ def test_the_stage_two_config_loads_and_records_the_rule(tmp_path: Path) -> None
     assert config.setups == chosen
     assert (config.judge.model, config.judge.thinking) == ("gpt-6-luna", "high")
     assert "decision 62" in path.read_text(encoding="utf-8")
+
+
+def test_answer_text_ranks_find_the_first_passage_holding_a_reference(tmp_path: Path) -> None:
+    references = {"q1": ("360 km",), "q2": ("absent words",)}
+    evaluation_set = EvaluationSet(
+        name="tiny",
+        pages=EVALUATION_SET.pages,
+        questions=tuple(
+            replace(q, short_answers=references.get(q.question_id, ("x",)))
+            for q in EVALUATION_SET.questions
+        ),
+        meta={},
+    )
+    run_dir = write_run(tmp_path, "alpha", stem=True)
+    ranks = answer_text_ranks(run_dir, evaluation_set, {"q1", "q2"})
+    assert ranks["q1"] is not None
+    assert ranks["q1"] >= 1
+    assert ranks["q2"] is None
+
+
+def write_scored(path: Path, setup: str, rows: list[tuple[str, str, bool, bool]]) -> Path:
+    path.mkdir(parents=True)
+    (path / "scored.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "setup": setup,
+                    "question_id": question,
+                    "answer_type": "table",
+                    "correctness": correctness,
+                    "groundedness": "supported" if supported else "not_supported",
+                    "contains_reference": correctness == "correct",
+                    "declined": declined,
+                }
+            )
+            + "\n"
+            for question, correctness, supported, declined in rows
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_the_writer_is_compared_on_the_same_table_questions(tmp_path: Path) -> None:
+    structured = write_scored(
+        tmp_path / "structured",
+        "win",
+        [
+            ("q1", "correct", True, False),
+            ("q2", "incorrect", False, False),
+            ("q3", "", False, True),
+        ],
+    )
+    flattened = write_scored(
+        tmp_path / "flat",
+        "win-flat-tables",
+        [
+            ("q1", "correct", True, False),
+            ("q2", "correct", True, False),
+            ("q9", "correct", True, False),
+        ],
+    )
+    result = table_writer(structured, flattened, "win", seed=1)
+    assert result["questions"] == 2
+    comparisons = result["comparisons"]
+    assert isinstance(comparisons, dict)
+    [correct] = comparisons["correct_judge"]
+    assert (correct["a"], correct["b"]) == ("win-flat-tables", "win")
+    assert correct["mean_a"] == pytest.approx(1.0)
+    assert correct["mean_b"] == pytest.approx(0.5)

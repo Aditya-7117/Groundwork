@@ -10,11 +10,15 @@ the README can be traced to an artefact.
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from groundwork.agreement import agreement, roc_auc
-from groundwork.answering import latest_run
+from groundwork.answering import latest_run, read_ranking
+from groundwork.baselines import contains_reference
+from groundwork.chunking import ChunkingSettings, chunk_pages
+from groundwork.config import ExperimentConfig
+from groundwork.evaluation import EvaluationSet
 from groundwork.judging import GROUNDEDNESS
 from groundwork.significance import compare
 from groundwork.verdicts import LEXICAL_SUPPORTED, NLI_SUPPORTED
@@ -166,24 +170,121 @@ def significance(runs: Mapping[str, Document], *, seed: int) -> dict[str, object
     return families
 
 
-def table_ablation(runs: Mapping[str, Document], winner: str) -> dict[str, object] | None:
-    """The winner against itself with tables flattened, on table questions (decision 40)."""
+ABLATION_METRICS = ("answer_hit@10", "answer_rr@10", "span_hit@10", "span_rr@10")
+"""Table-ablation measures, primary first (decision 81). The answer-text measures ask whether a
+top-10 passage contains a reference answer, which counts the same way for both table layouts.
+The span measures ask whether a passage overlaps the answer's marked span; for a table answer that
+span is often the whole table, and each layout splits a table into a different number of chunks,
+so they are shown for comparison with the grid, not as the verdict."""
+
+
+def answer_text_ranks(
+    run_dir: Path, evaluation_set: EvaluationSet, question_ids: set[str]
+) -> dict[str, int | None]:
+    """For each question, the rank of the first top-10 passage containing a reference answer."""
+    document = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    config = ExperimentConfig.model_validate(document["experiment"]["config"])
+    settings = ChunkingSettings(
+        strategy=config.chunking.strategy,
+        size=config.chunking.size,
+        overlap=config.chunking.overlap,
+        flatten_tables=config.chunking.flatten_tables,
+    )
+    texts = {chunk.chunk_id: chunk.text for chunk in chunk_pages(evaluation_set.pages, settings)}
+    ranking = read_ranking(run_dir, 10)
+    references = {q.question_id: q.short_answers for q in evaluation_set.questions}
+    ranks: dict[str, int | None] = {}
+    for question_id in question_ids:
+        ranks[question_id] = next(
+            (
+                rank
+                for rank, chunk_id in enumerate(ranking.get(question_id, ()), start=1)
+                # The body only: the "Title > Section" line is not retrieved content.
+                if contains_reference(texts[chunk_id].partition("\n")[2], references[question_id])
+            ),
+            None,
+        )
+    return ranks
+
+
+def table_ablation(
+    runs: Mapping[str, Document],
+    winner: str,
+    run_dirs: Mapping[str, Path],
+    evaluation_set: EvaluationSet,
+) -> dict[str, object] | None:
+    """The winner against itself with tables flattened, on table questions (decisions 40, 81)."""
     flat = f"{winner}-flat-tables"
     if flat not in runs:
         return None
-    per_question = {setup: _per_question(runs[setup]) for setup in (winner, flat)}
-    tables = _table_questions(runs[winner])
-    subset = {
-        setup: {question: values for question, values in rows.items() if question in tables}
-        for setup, rows in per_question.items()
-    }
+    with_references = {q.question_id for q in evaluation_set.questions if q.short_answers}
+    tables = _table_questions(runs[winner]) & with_references
+    per_question: dict[str, dict[str, dict[str, float]]] = {}
+    for setup in (winner, flat):
+        spans = _per_question(runs[setup])
+        ranks = answer_text_ranks(run_dirs[setup], evaluation_set, tables)
+        per_question[setup] = {}
+        for question in tables:
+            rank = ranks[question]
+            per_question[setup][question] = {
+                "answer_hit@10": float(rank is not None),
+                "answer_rr@10": 1 / rank if rank is not None else 0.0,
+                "span_hit@10": float(spans[question]["passage.rr@10"] > 0),
+                "span_rr@10": spans[question]["passage.rr@10"],
+            }
     return {
         "questions": len(tables),
+        "primary": list(ABLATION_METRICS[:2]),
         "comparisons": {
-            metric: [asdict(row) for row in compare(subset, [(winner, flat)], metric, seed=1)]
-            for metric in TESTED
+            metric: [asdict(row) for row in compare(per_question, [(flat, winner)], metric, seed=1)]
+            for metric in ABLATION_METRICS
         },
     }
+
+
+def table_writer(structured: Path, flattened: Path, winner: str, *, seed: int) -> dict[str, object]:
+    """The writer's answers to the same table questions from structured and flattened tables.
+
+    Correct and grounded count over every question, with declined answers as neither.
+
+    Raises:
+        ReportError: If the two runs share no answered question.
+    """
+    flat = f"{winner}-flat-tables"
+    rows = {winner: _scored_rows(structured, winner), flat: _scored_rows(flattened, flat)}
+    shared = rows[winner].keys() & rows[flat].keys()
+    if not shared:
+        raise ReportError("the structured and flattened runs share no question")
+
+    def measures(row: Mapping[str, object]) -> dict[str, float]:
+        return {
+            "correct_judge": float(row.get("correctness") == "correct"),
+            "correct_containment": float(bool(row.get("contains_reference"))),
+            "declined": float(bool(row.get("declined"))),
+            "supported": float(row.get("groundedness") == "supported"),
+        }
+
+    per_question = {
+        setup: {question: measures(rows[setup][question]) for question in shared} for setup in rows
+    }
+    return {
+        "questions": len(shared),
+        "comparisons": {
+            metric: [
+                asdict(row) for row in compare(per_question, [(flat, winner)], metric, seed=seed)
+            ]
+            for metric in ("correct_judge", "correct_containment", "declined", "supported")
+        },
+    }
+
+
+def _scored_rows(verdicts_dir: Path, setup: str) -> dict[str, dict[str, object]]:
+    rows = {}
+    for line in (verdicts_dir / "scored.jsonl").read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if row["setup"] == setup and row["answer_type"] == "table":
+            rows[str(row["question_id"])] = row
+    return rows
 
 
 def human_agreement(scored_path: Path, labels_path: Path, *, seed: int) -> dict[str, object]:
@@ -273,43 +374,67 @@ def _rows(value: object) -> list[Mapping[str, object]]:
     return [_mapping(row) for row in value]
 
 
-def build_report(
-    results_dir: Path,
-    setups: Sequence[str],
-    *,
-    verdicts_dir: Path | None,
-    labels_path: Path | None,
-    seed: int,
-) -> dict[str, object]:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReportInputs:
+    """Where everything the report reads is.
+
+    Attributes:
+        results_dir: The runs.
+        setups: The grid setups.
+        evaluation_set: The corpus, for the table ablation's answer-text measures.
+        verdicts_dir: The stage-two verdicts, once they exist.
+        tables_verdicts_dir: The verdicts of the table-question follow-up (decision 80).
+        labels_path: The hand labels, once they exist.
+        seed: Seeds every significance test.
+    """
+
+    results_dir: Path
+    setups: Sequence[str]
+    evaluation_set: EvaluationSet
+    verdicts_dir: Path | None = None
+    tables_verdicts_dir: Path | None = None
+    labels_path: Path | None = None
+    seed: int = 1
+
+
+def build_report(inputs: ReportInputs) -> dict[str, object]:
     """Assemble every section the artefacts allow; later stages are left out until they exist.
 
     Raises:
         ReportError: If an artefact is missing or the runs come from different commits.
     """
-    runs = load_runs(results_dir, setups)
+    runs = load_runs(inputs.results_dir, inputs.setups)
     retrieval = retrieval_table(runs)
     winner = str(retrieval[0]["setup"])
     report: dict[str, object] = {
         "primary_metric": PRIMARY,
-        "commit": _get(next(iter(runs.values())), "code", "git_commit"),
+        "commit": run_commit(runs),
         "retrieval": retrieval,
-        "significance": significance(runs, seed=seed),
+        "significance": significance(runs, seed=inputs.seed),
     }
-    ablation_runs = dict(runs)
     flat = f"{winner}-flat-tables"
-    if (results_dir / flat).is_dir():
-        ablation_runs.update(load_runs(results_dir, [flat]))
-    report["table_ablation"] = table_ablation(ablation_runs, winner)
-    if verdicts_dir is not None:
-        verdicts = json.loads((verdicts_dir / "result.json").read_text(encoding="utf-8"))
+    if (inputs.results_dir / flat).is_dir():
+        # The ablation ran later, from its own commit; retrieval code was unchanged in between.
+        ablation_runs = {**runs, **load_runs(inputs.results_dir, [flat])}
+        run_dirs = {name: latest_run(inputs.results_dir, name) for name in (winner, flat)}
+        ablation = table_ablation(ablation_runs, winner, run_dirs, inputs.evaluation_set)
+        if ablation is not None:
+            ablation["commit"] = run_commit({flat: ablation_runs[flat]})
+        report["table_ablation"] = ablation
+    if inputs.verdicts_dir is not None:
+        verdicts = json.loads((inputs.verdicts_dir / "result.json").read_text(encoding="utf-8"))
         report["stage_two"] = {
-            "path": verdicts_dir.as_posix(),
+            "path": inputs.verdicts_dir.as_posix(),
             "setups": verdicts["setups"],
             "agreement_with_judge": verdicts["agreement_with_judge"],
             "judge": {key: verdicts["judge"][key] for key in ("model", "thinking", "spent")},
         }
-        if labels_path is not None:
+        if inputs.tables_verdicts_dir is not None:
+            report["table_writer"] = table_writer(
+                inputs.verdicts_dir, inputs.tables_verdicts_dir, winner, seed=inputs.seed
+            )
+        if inputs.labels_path is not None:
             report["human_agreement"] = human_agreement(
-                verdicts_dir / "scored.jsonl", labels_path, seed=seed
+                inputs.verdicts_dir / "scored.jsonl", inputs.labels_path, seed=inputs.seed
             )
     return report

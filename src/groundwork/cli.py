@@ -75,6 +75,7 @@ from groundwork.remote import JsonClient
 from groundwork.report import (
     PRIMARY,
     ReportError,
+    ReportInputs,
     build_report,
     load_runs,
     markdown,
@@ -160,9 +161,7 @@ def main(
         "golden": lambda: _golden(data_dir, arguments.out),
         "site": lambda: _site(arguments, data_dir),
         "serve": lambda: _serve(arguments, data_dir),
-        "report": lambda: _report(
-            arguments.results_dir, arguments.verdicts, arguments.labels, now=clock
-        ),
+        "report": lambda: _report(arguments, data_dir, now=clock),
         "gate": lambda: _gate(
             arguments.baseline,
             LocalModels(
@@ -434,16 +433,23 @@ def _judge(
     return 0
 
 
-def _report(results_dir: Path, verdicts: Path | None, labels: Path | None, *, now: Now) -> int:
-    """Write the report over the whole grid, plus stage two and the labels once they exist."""
-    report = build_report(
-        results_dir,
-        [setup.name for setup in grid()],
-        verdicts_dir=verdicts,
-        labels_path=labels,
+def _report_inputs(arguments: argparse.Namespace, evaluation_set: EvaluationSet) -> ReportInputs:
+    return ReportInputs(
+        results_dir=arguments.results_dir,
+        setups=[setup.name for setup in grid()],
+        evaluation_set=evaluation_set,
+        verdicts_dir=arguments.verdicts,
+        tables_verdicts_dir=arguments.tables_verdicts,
+        labels_path=arguments.labels,
         seed=1,
     )
-    directory = write_report(report, markdown(report), results_dir, now())
+
+
+def _report(arguments: argparse.Namespace, data_dir: Path, *, now: Now) -> int:
+    """Write the report over the whole grid, plus stage two and the labels once they exist."""
+    evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
+    report = build_report(_report_inputs(arguments, evaluation_set))
+    directory = write_report(report, markdown(report), arguments.results_dir, now())
     logger.info("report written", extra={"path": str(directory), "winner": report["significance"]})
     return 0
 
@@ -451,14 +457,9 @@ def _report(results_dir: Path, verdicts: Path | None, labels: Path | None, *, no
 def _site(arguments: argparse.Namespace, data_dir: Path) -> int:
     """Write the explorer's data files: the report plus every grid setup, and stage two if given."""
     results_dir: Path = arguments.results_dir
+    evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
+    report = build_report(_report_inputs(arguments, evaluation_set))
     setups = [setup.name for setup in grid()]
-    report = build_report(
-        results_dir,
-        setups,
-        verdicts_dir=arguments.verdicts,
-        labels_path=arguments.labels,
-        seed=1,
-    )
     stage_two = None
     if arguments.answers is not None and arguments.verdicts is not None:
         stage_two = StageTwoInputs(
@@ -469,7 +470,7 @@ def _site(arguments: argparse.Namespace, data_dir: Path) -> int:
     export_site(
         report,
         {setup: latest_run(results_dir, setup) for setup in setups},
-        load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built"),
+        evaluation_set,
         arguments.out,
         stage_two=stage_two,
     )
@@ -628,6 +629,9 @@ def _add_output_commands(commands: _Commands) -> None:
     report.add_argument("--verdicts", type=Path, default=None, help="a stage-two verdicts run")
     report.add_argument("--labels", type=Path, default=None, help="the hand labels file")
     report.add_argument(
+        "--tables-verdicts", type=Path, default=None, help="the table-question follow-up's verdicts"
+    )
+    report.add_argument(
         "--results-dir",
         type=Path,
         default=Path("results"),
@@ -637,6 +641,9 @@ def _add_output_commands(commands: _Commands) -> None:
     site.add_argument("--answers", type=Path, default=None, help="a stage-two answers run")
     site.add_argument("--verdicts", type=Path, default=None, help="its verdicts run")
     site.add_argument("--labels", type=Path, default=None, help="the hand labels file")
+    site.add_argument(
+        "--tables-verdicts", type=Path, default=None, help="the table-question follow-up's verdicts"
+    )
     site.add_argument("--results-dir", type=Path, default=Path("results"), help="runs")
     site.add_argument(
         "--out", type=Path, default=Path("results/site/data"), help="output directory"
