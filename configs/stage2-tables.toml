@@ -1,0 +1,16 @@
+# The writer on the table questions of the stage-two sample, from the table ablation's passages
+# (decision 80): the same 189 questions the winner answered with structured tables, so the two can
+# be compared question by question.
+
+name = "stage-two-tables"
+description = "Answers to the sample's table questions from the winner with tables flattened."
+seed = 1
+questions = 1000
+passages = 5
+writer = "qwen3.8-27b-iq4xs"
+setups = ["fixed-qwen3-rerank-flat-tables"]
+answer_types = ["table"]
+
+[judge]
+model = "gpt-6-luna"
+thinking = "high"
