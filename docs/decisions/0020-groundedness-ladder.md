@@ -17,7 +17,8 @@ methods do. The project measures that rather than assuming it.
 
 - Rungs, cheapest first: word overlap on the words an answer adds beyond the question;
   MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli (MIT, pinned) taking the strongest
-  entailment across the passages; the Gemini judge; 200 hand labels.
+  entailment across the passages; the language-model judge (GPT-6 Luna, record 0022); 200 hand
+  labels.
 - Cut-offs fixed before any label: NLI supported at entailment 0.5 or more, word overlap only at
   1.0. Also ROC AUC, which needs no cut-off.
 - 200 hand labels, 40 per stage-two setup, seeded and shuffled, labelled blind to setup, reference

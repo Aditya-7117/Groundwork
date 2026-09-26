@@ -73,7 +73,7 @@ export function Method({ report }: { report: Report }) {
           <p>
             Five setups answer 1,000 questions stratified by answer type. Qwen3.8-27B, running locally with
             thinking off and temperature 0, writes one sentence from the top five passages or says "I don't know".
-            Gemini 3.8 Flash labels groundedness (supported, partly, not) without seeing the reference, and
+            GPT-6 Luna at high reasoning effort labels groundedness (supported, partly, not) without seeing the reference, and
             correctness against the reference. Word overlap and an NLI classifier score the same answers; 200
             answers were labelled by hand, blind. Agreement is Cohen's κ with a bootstrap interval.
           </p>
