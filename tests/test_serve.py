@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fakes import FakeModels
+from groundwork.chunking import chunk_pages
 from groundwork.config import ExperimentConfig
-from groundwork.serve import build_live_setup, create_app
+from groundwork.serve import build_live_setup, chunking_settings, create_app
 from runs import EVALUATION_SET, config
 
 DENSE = ExperimentConfig.model_validate(
@@ -22,9 +23,10 @@ DENSE = ExperimentConfig.model_validate(
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     models = FakeModels(tmp_path / "vectors", rerank_word="jupiter")
+    chunks = chunk_pages(EVALUATION_SET.pages, chunking_settings(DENSE))
     live = {
-        "live-bm25": build_live_setup(config("live-bm25", stem=True), EVALUATION_SET, models),
-        "live-dense": build_live_setup(DENSE, EVALUATION_SET, models),
+        "live-bm25": build_live_setup(config("live-bm25", stem=True), chunks, models),
+        "live-dense": build_live_setup(DENSE, chunks, models),
     }
     return TestClient(create_app(live, None))
 

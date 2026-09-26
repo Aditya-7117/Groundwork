@@ -20,6 +20,7 @@ config digest everywhere.
 """
 
 import argparse
+import gc
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -52,6 +53,7 @@ from groundwork.artefact import (
 )
 from groundwork.baselines import NliChecker
 from groundwork.cache import ResponseCache
+from groundwork.chunking import chunk_pages
 from groundwork.config import (
     ConfigError,
     ExperimentConfig,
@@ -86,7 +88,7 @@ from groundwork.report import (
 )
 from groundwork.rerank import RerankError
 from groundwork.sentences import model_digest
-from groundwork.serve import build_live_setup, create_app
+from groundwork.serve import build_live_setup, chunking_settings, create_app
 from groundwork.site import StageTwoInputs, export_site
 from groundwork.timing import SAMPLE, retime, timing_sample
 from groundwork.verdicts import CostGuard, entailment_with, judge_all, score_answers
@@ -481,14 +483,25 @@ def _site(arguments: argparse.Namespace, data_dir: Path) -> int:
 def _serve(arguments: argparse.Namespace, data_dir: Path) -> int:
     """Build each live setup once, then serve the site and live search until stopped."""
     configs = [load_config(path) for path in arguments.live]
-    evaluation_set = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built")
+    pages = load_built_corpus(data_dir / NATURAL_QUESTIONS.name / "built").pages
+    chunks = {
+        settings: chunk_pages(pages, settings)
+        for settings in {chunking_settings(config) for config in configs}
+    }
+    # Live search needs only the chunks, and the pages are the largest thing in memory, so they
+    # go before the models and vectors are loaded.
+    del pages
+    gc.collect()
     models = LocalModels(
         cache_dir=data_dir / "embeddings",
         weights_dir=data_dir / "huggingface" / "hub",
         device=arguments.device,
         stored_vectors=arguments.stored_vectors,
     )
-    live = {config.name: build_live_setup(config, evaluation_set, models) for config in configs}
+    live = {
+        config.name: build_live_setup(config, chunks[chunking_settings(config)], models)
+        for config in configs
+    }
     uvicorn.run(
         create_app(live, arguments.site), host=arguments.host, port=arguments.port, log_config=None
     )

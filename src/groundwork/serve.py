@@ -17,9 +17,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from groundwork.chunking import ChunkingSettings, chunk_pages
+from groundwork.chunking import Chunk, ChunkingSettings
 from groundwork.config import ExperimentConfig
-from groundwork.evaluation import EvaluationSet
 from groundwork.experiment import ModelProvider, build_first_stage
 from groundwork.rerank import get_reranker, rerank
 from groundwork.retrieval import ChunkTable
@@ -65,19 +64,20 @@ class LiveSetup:
     search: Callable[[str], SearchResponse]
 
 
-def build_live_setup(
-    config: ExperimentConfig, evaluation_set: EvaluationSet, models: ModelProvider
-) -> LiveSetup:
-    """Build a setup's chunks, index and models once, and return its search function."""
-    chunks = chunk_pages(
-        evaluation_set.pages,
-        ChunkingSettings(
-            strategy=config.chunking.strategy,
-            size=config.chunking.size,
-            overlap=config.chunking.overlap,
-            flatten_tables=config.chunking.flatten_tables,
-        ),
+def chunking_settings(config: ExperimentConfig) -> ChunkingSettings:
+    """The chunking a config describes."""
+    return ChunkingSettings(
+        strategy=config.chunking.strategy,
+        size=config.chunking.size,
+        overlap=config.chunking.overlap,
+        flatten_tables=config.chunking.flatten_tables,
     )
+
+
+def build_live_setup(
+    config: ExperimentConfig, chunks: Sequence[Chunk], models: ModelProvider
+) -> LiveSetup:
+    """Build a setup's index and models once from its chunks, and return its search function."""
     table = ChunkTable(chunks)
     first_stage = build_first_stage(config, chunks, table, models, time.perf_counter)
     scorer = models.scorer(get_reranker(config.rerank.model)) if config.rerank is not None else None
