@@ -4,16 +4,16 @@ Groundwork measures which retrieval setup for retrieval-augmented generation act
 passage that answers a real question, how fast, and at what cost. It scores 30 setups (three ways
 of chunking, five first-stage retrievers, with and without a reranker) on all 3,220 questions of
 the Natural Questions validation split, then has the best few write answers that a language-model
-judge scores for groundedness and correctness. The judge is itself judged: its labels are compared
-with two cheaper checks and with 200 answers labelled by hand, blind.
+judge scores for groundedness and correctness. The judge is itself judged: its groundedness labels
+are compared with two cheaper checks and with 200 answers labelled by hand, blind.
 
 **Result.** Four setups that pair the Qwen3-Embedding model with a cross-encoder reranker tie at
 the top: the best, fixed-qwen3-rerank, reaches passage nDCG@10 of 0.696 against 0.321 for the BM25
 baseline, and it is not significantly ahead of the other three. The reranker is the decisive
 component: it raises nDCG@10 for every one of the fifteen first stages, by 0.15 to 0.29. The
-judge held up against 200 blind hand labels: it gave the same label on 95% of them (Cohen's kappa
-0.53) and flagged every answer the hand labels flagged, where the cheaper NLI check caught two in
-six.
+judge's groundedness labels held up against 200 blind hand labels: it gave the same label on 95% of
+them (Cohen's kappa 0.53) and flagged every answer the hand labels flagged, where the cheaper NLI
+check caught two in six.
 
 ## Results
 
@@ -103,10 +103,10 @@ share of the answered ones.
   100 prompts per setup, uncached, in one session; reading the ~1,200-token prompt dominates.
 
 Is the judge right? Two hundred answers were labelled by hand, blind: 40 answered questions per
-setup, drawn with seed 1 and shuffled, each shown with its passages and question but not the
-judge's label or the setup. On the same three-level scale, the judge gave the same label on 190
-(95%), Cohen's kappa 0.53 (95% interval 0.22 to 0.77). It flagged every answer the hand labels
-flagged (4 partly supported, 2 not supported), with the same label each time; all ten
+setup, drawn with seed 1 and shuffled, each shown with its passages and question but not the judge's
+label or the setup, and labelled for groundedness. On the same three-level scale, the judge gave the
+same label on 190 (95%), Cohen's kappa 0.53 (95% interval 0.22 to 0.77). It flagged every answer the
+hand labels flagged (4 partly supported, 2 not supported), with the same label each time; all ten
 disagreements are answers labelled supported by hand that the judge marked partly (9) or not (1)
 supported. The cheaper checks, cut to "fully supported or not" at their fixed cut-offs, do worse on
 the same 200:
@@ -206,6 +206,7 @@ The explorer:
 
 ```bash
 uv run groundwork site --answers results/stage-two/<run> --verdicts results/stage-two-verdicts/<run> \
+  --tables-verdicts results/stage-two-tables-verdicts/<run> \
   --labels results/labels/stage-two.jsonl      # results/site/data
 cd src/explorer && npm ci && npm run build     # the static site, in src/explorer/dist
 uv run groundwork serve --site src/explorer/dist --live configs/grid/fixed-bm25.toml configs/grid/fixed-qwen3-rerank.toml
@@ -227,6 +228,8 @@ reproduces the published numbers without calling a model again.
 - One person made the hand labels, so agreement between people is not measured. Only 6 of the
   200 were not fully supported, so the agreement intervals are wide; sampling more of the
   answers the judge flags would narrow them.
+- The hand labels check groundedness only. The judge's correctness labels are checked only against
+  mechanical containment, which misses paraphrases.
 - Chunk size, BM25 parameters, the fusion constant and the rerank depth are published defaults,
   not tuned.
 - Every timing comes from one laptop; the artefacts record its state.
