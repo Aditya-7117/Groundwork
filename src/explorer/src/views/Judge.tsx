@@ -80,7 +80,7 @@ export function Judge({ report }: { report: Report }) {
       </div>
 
       {human && (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-[3fr_2fr_2fr]">
           <ConfusionCard title="Hand label against judge" agreement={human.judge} labels={scale} columns="judge" />
           <ConfusionCard title="Hand label against NLI" agreement={human.nli} labels={["supported", "not"]} columns="NLI" />
           <ConfusionCard
@@ -105,7 +105,7 @@ export function Judge({ report }: { report: Report }) {
                   className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left text-sm"
                   onClick={() => setOpen(open === index ? null : index)}
                 >
-                  <span className="min-w-0 flex-1">{row.question}</span>
+                  <span className="min-w-0 basis-full sm:flex-1">{row.question}</span>
                   <Badge variant="outline">hand: {GROUNDEDNESS_LABELS[row.human]}</Badge>
                   <Badge variant="secondary">judge: {GROUNDEDNESS_LABELS[row.judge ?? ""] ?? "–"}</Badge>
                 </button>

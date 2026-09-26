@@ -188,7 +188,7 @@ export function Confusion({
           </th>
           {labels.map((label) => (
             <th key={label} className="p-1 font-normal text-muted-foreground">
-              {label}
+              {label.replaceAll("_", " ")}
             </th>
           ))}
         </tr>
@@ -196,7 +196,7 @@ export function Confusion({
       <tbody>
         {labels.map((row) => (
           <tr key={row}>
-            <th className="p-1 text-left font-normal text-muted-foreground">{row}</th>
+            <th className="p-1 text-left font-normal text-muted-foreground">{row.replaceAll("_", " ")}</th>
             {labels.map((column) => {
               const count = matrix[row]?.[column] ?? 0
               return (
