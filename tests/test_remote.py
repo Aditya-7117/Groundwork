@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from groundwork.remote import JsonClient, RemoteError, Reply, urllib_transport
+from groundwork.remote import JsonClient, RemoteError, Reply, _retry_after, urllib_transport
 
 
 class Scripted:
@@ -92,3 +92,12 @@ def test_a_reply_that_is_not_a_json_object_is_rejected() -> None:
 def test_the_real_transport_refuses_plain_http_to_other_hosts() -> None:
     with pytest.raises(RemoteError, match="only https or a local server"):
         urllib_transport("http://example.invalid/x", None, {}, 1.0)
+
+
+@pytest.mark.parametrize(("header", "seconds"), [("2", 2.0), ("1.524", 1.524), (None, None)])
+def test_retry_after_accepts_fractions(header: str | None, seconds: float | None) -> None:
+    assert _retry_after(header) == seconds
+
+
+def test_an_http_date_in_retry_after_is_ignored() -> None:
+    assert _retry_after("Wed, 21 Oct 2026 07:28:00 GMT") is None

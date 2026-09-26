@@ -71,6 +71,7 @@ from groundwork.judging import Judge, JudgeError
 from groundwork.labelling import LabellingError, label_sample, run_labelling
 from groundwork.logs import configure_logging
 from groundwork.natural_questions import NATURAL_QUESTIONS, build_corpus, fetch
+from groundwork.remote import JsonClient
 from groundwork.report import (
     PRIMARY,
     ReportError,
@@ -399,6 +400,9 @@ def _judge(
         cache=ResponseCache(data_dir / "cache" / "judge.jsonl"),
         model=config.judge.model,
         thinking=config.judge.thinking,
+        # Rate limits on tokens per minute are shared by every request in flight, so a busy
+        # minute can refuse several attempts in a row; patience costs only time.
+        client=JsonClient(attempts=10),
     )
     answered = sum(not answer.declined for answer in answers)
     guard = CostGuard(budget=budget.dollars, expected_calls=2 * answered)
@@ -608,7 +612,7 @@ def _add_stage_two_commands(commands: _Commands) -> None:
         "--budget", type=float, required=True, help="approved judging budget in US dollars"
     )
     judge.add_argument(
-        "--workers", type=int, default=8, help="judge requests in flight at once (default: 8)"
+        "--workers", type=int, default=3, help="judge requests in flight at once (default: 3)"
     )
     judge.add_argument(
         "--results-dir", type=Path, default=Path("results"), help="output (default: results)"

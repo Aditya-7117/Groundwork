@@ -63,11 +63,10 @@ def urllib_transport(
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             return Reply(status=response.status, body=response.read())
     except urllib.error.HTTPError as error:
-        retry_after = error.headers.get("Retry-After") if error.headers else None
         return Reply(
             status=error.code,
             body=error.read(),
-            retry_after=float(retry_after) if retry_after and retry_after.isdigit() else None,
+            retry_after=_retry_after(error.headers.get("Retry-After") if error.headers else None),
         )
     except (urllib.error.URLError, TimeoutError) as error:
         return Reply(status=0, body=str(error).encode("utf-8"))
@@ -132,6 +131,14 @@ class JsonClient:
             )
             self._sleep(delay)
         raise RemoteError(f"{_redact(url)}: no attempts were made")
+
+
+def _retry_after(value: str | None) -> float | None:
+    """Seconds a server asked to wait. Some send fractions ("1.5"); an HTTP date is ignored."""
+    try:
+        return float(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 def _decode(url: str, body: bytes) -> dict[str, object]:
