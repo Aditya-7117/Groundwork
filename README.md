@@ -10,7 +10,10 @@ with two cheaper checks and with 200 answers labelled by hand, blind.
 **Result.** Four setups that pair the Qwen3-Embedding model with a cross-encoder reranker tie at
 the top: the best, fixed-qwen3-rerank, reaches passage nDCG@10 of 0.696 against 0.321 for the BM25
 baseline, and it is not significantly ahead of the other three. The reranker is the decisive
-component: it raises nDCG@10 for every one of the fifteen first stages, by 0.15 to 0.29.
+component: it raises nDCG@10 for every one of the fifteen first stages, by 0.15 to 0.29. The
+judge held up against 200 blind hand labels: it gave the same label on 95% of them (Cohen's kappa
+0.53) and flagged every answer the hand labels flagged, where the cheaper NLI check caught two in
+six.
 
 ## Results
 
@@ -99,8 +102,26 @@ share of the answered ones.
 - Writing an answer takes 8.0 to 9.3 s at the median on the laptop, measured by re-sending the same
   100 prompts per setup, uncached, in one session; reading the ~1,200-token prompt dominates.
 
-Agreement of the judge, NLI and word overlap with 200 blind hand labels is added here when
-labelling is finished.
+Is the judge right? Two hundred answers were labelled by hand, blind: 40 answered questions per
+setup, drawn with seed 1 and shuffled, each shown with its passages and question but not the
+judge's label or the setup. On the same three-level scale, the judge gave the same label on 190
+(95%), Cohen's kappa 0.53 (95% interval 0.22 to 0.77). It flagged every answer the hand labels
+flagged (4 partly supported, 2 not supported), with the same label each time; all ten
+disagreements are answers labelled supported by hand that the judge marked partly (9) or not (1)
+supported. The cheaper checks, cut to "fully supported or not" at their fixed cut-offs, do worse on
+the same 200:
+
+| Check against the hand labels | Agreement | Cohen's kappa (95% interval) | ROC AUC | Flagged answers caught |
+|---|---|---|---|---|
+| GPT-6 Luna judge (three levels) | 95.0% | 0.53 (0.22 to 0.77) | | 6 of 6 |
+| NLI, entailment 0.5 or more | 96.5% | 0.35 (−0.02 to 0.69) | 0.74 | 2 of 6 |
+| Word overlap, every word found | 82.0% | 0.05 (−0.05 to 0.19) | 0.58 | 2 of 6 |
+
+Kappa sits far below raw agreement because 97% of the hand labels are "supported": two raters who
+nearly always say "supported" agree often by chance, and kappa discounts that. NLI's raw agreement
+is the highest for the same reason; it says "supported" almost every time, including for four of
+the six flagged answers. With six flagged answers, every interval is wide. Labels 1 to 80 were given
+on screen and 81 to 200 from a PDF of the same screens; the judge agreed with 95.0% of each part.
 
 Against the judge on all 4,228 answered questions, the cheaper checks agree little beyond chance:
 an NLI classifier (DeBERTa-v3-large, supported at entailment probability 0.5 or more, a cut-off
@@ -203,7 +224,9 @@ reproduces the published numbers without calling a model again.
 - One corpus: Wikipedia pages via Natural Questions. The findings may not transfer to other
   kinds of documents.
 - Answers are written and judged for five setups on 1,000 questions, not for all thirty.
-- One person made the hand labels, so agreement between people is not measured.
+- One person made the hand labels, so agreement between people is not measured. Only 6 of the
+  200 were not fully supported, so the agreement intervals are wide; sampling more of the
+  answers the judge flags would narrow them.
 - Chunk size, BM25 parameters, the fusion constant and the rerank depth are published defaults,
   not tuned.
 - Every timing comes from one laptop; the artefacts record its state.
